@@ -1,0 +1,13 @@
+{
+  "name": "codelumeai",
+  "description": "Translate code to plain English and back. Read your code in English; edit your code by editing the English.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Nicolas Sakr",
+    "email": "sakrnicolas@gmail.com",
+    "url": "https://github.com/Nicolas4485"
+  },
+  "homepage": "https://github.com/Nicolas4485/codelumeai",
+  "repository": "https://github.com/Nicolas4485/codelumeai",
+  "license": "MIT"
+}
