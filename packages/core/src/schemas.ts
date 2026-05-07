@@ -1,0 +1,47 @@
+import { z } from "zod";
+
+export const ConfidenceSchema = z.enum(["high", "medium", "low"]);
+export type Confidence = z.infer<typeof ConfidenceSchema>;
+
+export const ChunkSchema = z.object({
+  startLine: z.number().int().min(1),
+  endLine: z.number().int().min(1),
+  title: z.string().min(1),
+  english: z.string().min(1),
+  confidence: ConfidenceSchema,
+  note: z.string().optional(),
+});
+export type Chunk = z.infer<typeof ChunkSchema>;
+
+export const TranslationSchema = z.object({
+  primer: z.string(),
+  chunks: z.array(ChunkSchema),
+});
+export type Translation = z.infer<typeof TranslationSchema>;
+
+export const TRANSLATION_TOOL_INPUT_SCHEMA = {
+  type: "object",
+  required: ["primer", "chunks"],
+  properties: {
+    primer: {
+      type: "string",
+      description:
+        "Markdown bullets explaining the syntactic constructs in this file's language. 3–8 bullets. Skip constructs a layperson knows from English.",
+    },
+    chunks: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["startLine", "endLine", "title", "english", "confidence"],
+        properties: {
+          startLine: { type: "integer", minimum: 1 },
+          endLine: { type: "integer", minimum: 1 },
+          title: { type: "string" },
+          english: { type: "string" },
+          confidence: { type: "string", enum: ["high", "medium", "low"] },
+          note: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;

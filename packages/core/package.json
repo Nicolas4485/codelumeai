@@ -4,15 +4,8 @@
   "private": true,
   "description": "Shared translation logic for the CodeLumeAI VS Code extension and Claude Code plugin.",
   "license": "MIT",
-  "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
   "files": ["dist"],
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -20,6 +13,10 @@
     "lint": "eslint src",
     "test": "vitest run",
     "clean": "rimraf dist .turbo"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "rimraf": "^6.0.0",

@@ -1,18 +1,101 @@
 {
-  "name": "@codelumeai/vscode-extension",
+  "name": "codelumeai",
+  "displayName": "CodeLumeAI",
+  "description": "Read your code in plain English. Hover any function to see what it does.",
   "version": "0.0.0",
   "private": true,
-  "description": "CodeLumeAI VS Code extension. Read your code in plain English; edit your code by editing the English.",
+  "publisher": "nic-ai",
   "license": "MIT",
+  "author": "Nicolas Sakr <sakrnicolas@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nicolas4485/codelumeai"
+  },
+  "categories": ["Programming Languages", "Education", "Other"],
+  "keywords": ["plain english", "explain code", "claude", "anthropic", "translation", "ai"],
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:javascriptreact",
+    "onLanguage:typescriptreact",
+    "onLanguage:html",
+    "onLanguage:css",
+    "onLanguage:scss",
+    "onLanguage:go",
+    "onLanguage:rust",
+    "onLanguage:java",
+    "onLanguage:csharp",
+    "onLanguage:ruby",
+    "onLanguage:php"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "codelumeai.setApiKey",
+        "title": "Set Anthropic API Key",
+        "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.clearApiKey",
+        "title": "Clear Anthropic API Key",
+        "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.toggleMode",
+        "title": "Toggle Mode (Off / Hover / Always-on)",
+        "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.translateCurrentFile",
+        "title": "Translate Current File",
+        "category": "CodeLumeAI"
+      }
+    ],
+    "configuration": {
+      "title": "CodeLumeAI",
+      "properties": {
+        "codelumeai.mode": {
+          "type": "string",
+          "enum": ["off", "hover", "always-on"],
+          "default": "hover",
+          "description": "How translations are displayed. 'hover' = on-demand tooltips. 'always-on' = inline hints. 'off' = disabled."
+        },
+        "codelumeai.model": {
+          "type": "string",
+          "enum": ["claude-haiku-4-5", "claude-sonnet-4-6"],
+          "default": "claude-haiku-4-5",
+          "description": "Anthropic model used for translation. Haiku is fast and cheap; Sonnet is higher quality at higher cost."
+        },
+        "codelumeai.maxFileLines": {
+          "type": "number",
+          "default": 2000,
+          "description": "Skip files larger than this many lines (cost guardrail)."
+        }
+      }
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
     "build": "tsc",
+    "vscode:prepublish": "tsc",
+    "package": "vsce package",
     "clean": "rimraf dist .turbo *.vsix"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.2.0",
     "rimraf": "^6.0.0",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@codelumeai/core": "workspace:*"
   }
 }
