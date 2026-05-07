@@ -42,6 +42,9 @@ coverage/
 # Vercel
 .vercel
 
-# Local plan files (not part of the product)
+# Local cache files written by the future VS Code extension
 .codelumeai-cache/
-*.codelumeai.md
+
+# Note: *.codelumeai.md (translation companion files) are NOT gitignored
+# in this repo — we want to commit example translations under examples/.
+# End-users will add *.codelumeai.md to their own project's .gitignore.
