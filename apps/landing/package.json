@@ -1,0 +1,13 @@
+{
+  "name": "@codelumeai/landing",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Marketing site for CodeLumeAI. Built in Step 8 (Phase 4).",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "echo \"deferred to step 8\" && exit 0",
+    "lint": "echo \"deferred to step 8\" && exit 0",
+    "test": "echo \"deferred to step 8\" && exit 0",
+    "build": "echo \"deferred to step 8\" && exit 0"
+  }
+}

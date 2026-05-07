@@ -1,0 +1,37 @@
+{
+  "name": "codelumeai",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Read your code in plain English. Edit your code by editing the English.",
+  "license": "MIT",
+  "author": "Nicolas Sakr <sakrnicolas@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nicolas4485/codelumeai.git"
+  },
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "build": "turbo run build",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
+    "clean": "turbo run clean && rimraf node_modules"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.15.0",
+    "prettier": "^3.4.0",
+    "rimraf": "^6.0.0",
+    "turbo": "^2.3.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.16.0",
+    "vitest": "^2.1.0"
+  }
+}

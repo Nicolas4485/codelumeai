@@ -1,0 +1,13 @@
+{
+  "name": "@codelumeai/claude-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CodeLumeAI Claude Code plugin. /codelumeai translates code to plain English and back.",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "echo \"no typecheck — markdown only\" && exit 0",
+    "lint": "echo \"no lint — markdown only\" && exit 0",
+    "test": "echo \"no tests yet\" && exit 0",
+    "build": "echo \"no build — markdown only\" && exit 0"
+  }
+}
