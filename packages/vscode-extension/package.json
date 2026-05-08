@@ -56,6 +56,11 @@
         "category": "CodeLumeAI"
       },
       {
+        "command": "codelumeai.openSidePanel",
+        "title": "Open Side Panel",
+        "category": "CodeLumeAI"
+      },
+      {
         "command": "codelumeai.showLogs",
         "title": "Show Logs",
         "category": "CodeLumeAI"

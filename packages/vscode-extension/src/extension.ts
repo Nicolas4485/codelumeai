@@ -8,6 +8,7 @@ import {
   type Chunk,
   type LineEntry,
 } from "@codelumeai/core";
+import { SidePanel } from "./sidePanel";
 
 const SECRET_KEY = "codelumeai.apiKey";
 const CACHE_SCHEMA_VERSION = "v2";
@@ -38,6 +39,7 @@ interface ExtensionState {
   statusBar: vscode.StatusBarItem;
   inFlight: Map<string, Promise<Translation | undefined>>;
   output: vscode.OutputChannel;
+  sidePanel: SidePanel;
 }
 
 function log(state: ExtensionState, level: "info" | "error", message: string): void {
@@ -147,6 +149,10 @@ async function getOrFetchTranslation(
         "info",
         `Translated ${filename ?? "(unnamed)"} in ${elapsed}ms (${translation.chunks.length} chunks).`,
       );
+      // Push the fresh translation to the side panel if it's open and showing this doc.
+      if (state.sidePanel.isOpen()) {
+        state.sidePanel.update(translation, document);
+      }
       return translation;
     } catch (err) {
       const msg =
@@ -173,7 +179,7 @@ async function getOrFetchTranslation(
 }
 
 class CodeLumeHoverProvider implements vscode.HoverProvider {
-  constructor(private readonly state: ExtensionState) {}
+  constructor(public readonly state: ExtensionState) {}
 
   async provideHover(
     document: vscode.TextDocument,
@@ -195,6 +201,11 @@ class CodeLumeHoverProvider implements vscode.HoverProvider {
     const chunk = chunkContainingLine(translation.chunks, position.line);
     if (!chunk) {
       return undefined;
+    }
+
+    // Notify the side panel (if open) so it highlights the matching chunk.
+    if (this.state.sidePanel.isOpen()) {
+      this.state.sidePanel.highlightChunkForEditorLine(position.line);
     }
 
     const lineEntry = lineEntryContainingLine(chunk, position.line);
@@ -355,6 +366,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     inFlight: new Map(),
     output: vscode.window.createOutputChannel("CodeLumeAI"),
+    sidePanel: new SidePanel(),
   };
 
   log(state, "info", "Extension activated.");
@@ -363,10 +375,29 @@ export function activate(context: vscode.ExtensionContext): void {
     state.inlayHintsEmitter,
     state.statusBar,
     state.output,
+    { dispose: () => state.sidePanel.dispose() },
 
     vscode.commands.registerCommand("codelumeai.showLogs", () => {
       state.output.show();
     }),
+
+    vscode.commands.registerCommand(
+      "codelumeai.openSidePanel",
+      async () => {
+        state.sidePanel.show();
+        const editor = vscode.window.activeTextEditor;
+        if (editor && SUPPORTED_LANGUAGES.includes(editor.document.languageId)) {
+          const apiKey = await ensureApiKeyOrPrompt(state);
+          if (!apiKey) {
+            return;
+          }
+          const translation = await getOrFetchTranslation(state, editor.document);
+          if (translation) {
+            state.sidePanel.update(translation, editor.document);
+          }
+        }
+      },
+    ),
 
     vscode.commands.registerCommand("codelumeai.setApiKey", async () => {
       const key = await vscode.window.showInputBox({
@@ -464,11 +495,52 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.workspace.onDidSaveTextDocument(() => {
+    vscode.workspace.onDidSaveTextDocument((doc) => {
       // Coarse but correct: any save invalidates the whole cache.
       // Per-chunk invalidation is a v0.2 optimization.
       state.cache.clear();
       state.inlayHintsEmitter.fire();
+      // If the side panel is open and showing this file, refresh it.
+      if (
+        state.sidePanel.isOpen() &&
+        SUPPORTED_LANGUAGES.includes(doc.languageId)
+      ) {
+        void getOrFetchTranslation(state, doc).then((t) => {
+          if (t) {
+            state.sidePanel.update(t, doc);
+          }
+        });
+      }
+    }),
+
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      // When the active editor changes and the panel is open, refresh it
+      // for the new file. Skips unsupported languages.
+      if (!state.sidePanel.isOpen()) {
+        return;
+      }
+      if (!editor || !SUPPORTED_LANGUAGES.includes(editor.document.languageId)) {
+        return;
+      }
+      void getOrFetchTranslation(state, editor.document).then((t) => {
+        if (t) {
+          state.sidePanel.update(t, editor.document);
+        }
+      });
+    }),
+
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      // Move the panel's chunk highlight to follow the cursor in the editor.
+      if (!state.sidePanel.isOpen()) {
+        return;
+      }
+      if (!SUPPORTED_LANGUAGES.includes(e.textEditor.document.languageId)) {
+        return;
+      }
+      const line = e.selections[0]?.active.line;
+      if (line !== undefined) {
+        state.sidePanel.highlightChunkForEditorLine(line);
+      }
     }),
   );
 }
