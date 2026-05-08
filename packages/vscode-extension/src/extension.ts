@@ -52,17 +52,20 @@ function log(
 }
 
 /**
- * Walk the translation's chunks, return any gaps in line coverage.
- * Each gap is a [startLine, endLine] tuple (1-indexed, inclusive).
+ * Walk the translation's chunks, return any gaps in line coverage that
+ * contain actual non-blank source content. Each gap is a [startLine,
+ * endLine] tuple (1-indexed, inclusive).
  *
  * Used after every translation to detect when the model skipped a
- * function or block. The sequence-of-bools version (one bool per
- * line) is fine here — files are bounded by the maxFileLines setting.
+ * function or block. Gaps that are entirely whitespace (blank lines
+ * between chunks) are filtered out — they are not "missing translation",
+ * just normal source spacing.
  */
 function findCoverageGaps(
   translation: Translation,
-  totalLines: number,
+  document: vscode.TextDocument,
 ): Array<[number, number]> {
+  const totalLines = document.lineCount;
   if (totalLines <= 0) return [];
   const covered = new Array<boolean>(totalLines + 1).fill(false);
   for (const chunk of translation.chunks) {
@@ -72,18 +75,28 @@ function findCoverageGaps(
       covered[i] = true;
     }
   }
-  const gaps: Array<[number, number]> = [];
+  const rawGaps: Array<[number, number]> = [];
   let gapStart = -1;
   for (let i = 1; i <= totalLines; i++) {
     if (!covered[i]) {
       if (gapStart === -1) gapStart = i;
     } else if (gapStart !== -1) {
-      gaps.push([gapStart, i - 1]);
+      rawGaps.push([gapStart, i - 1]);
       gapStart = -1;
     }
   }
-  if (gapStart !== -1) gaps.push([gapStart, totalLines]);
-  return gaps;
+  if (gapStart !== -1) rawGaps.push([gapStart, totalLines]);
+
+  // Drop gaps that are entirely blank — those aren't missing translation,
+  // just whitespace between chunks. Keep gaps with any non-blank line.
+  return rawGaps.filter(([start, end]) => {
+    for (let i = start; i <= end; i++) {
+      // document line indices are 0-based.
+      const text = document.lineAt(i - 1).text.trim();
+      if (text.length > 0) return true;
+    }
+    return false;
+  });
 }
 
 function getMode(): Mode {
@@ -189,15 +202,15 @@ async function getOrFetchTranslation(
         `Translated ${filename ?? "(unnamed)"} in ${elapsed}ms (${translation.chunks.length} chunks).`,
       );
       // Coverage check — the prompt forbids skipping functions, but the model
-      // sometimes does anyway. Surface gaps to the log so users know to
-      // re-translate.
-      const gaps = findCoverageGaps(translation, document.lineCount);
+      // sometimes does anyway. Only flags gaps that contain actual non-blank
+      // source code (whitespace between chunks is not a real gap).
+      const gaps = findCoverageGaps(translation, document);
       if (gaps.length > 0) {
         const fmt = gaps.map(([s, e]) => `L${s}-${e}`).join(", ");
         log(
           state,
           "warn",
-          `Coverage gaps in ${filename ?? "(unnamed)"}: ${fmt}. The model skipped these line ranges. Consider running "Translate Current File" again or switching to claude-sonnet-4-6 in settings.`,
+          `Coverage gaps with code in ${filename ?? "(unnamed)"}: ${fmt}. The model skipped these line ranges. Consider running "Translate Current File" again or switching to claude-sonnet-4-6 in settings.`,
         );
       }
       // Push the fresh translation to the side panel if it's open and showing this doc.
