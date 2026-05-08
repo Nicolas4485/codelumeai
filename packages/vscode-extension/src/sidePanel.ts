@@ -84,6 +84,13 @@ export class SidePanel {
     });
 
     this.panel.webview.onDidReceiveMessage((msg: WebviewMessage) => {
+      // Log every message arriving from the webview. Once we know whether
+      // 'revealLines' shows up here, we know whether the click reaches us.
+      this.log(
+        `recv ${msg.type} ` +
+          `start=${String(msg.startLine)} end=${String(msg.endLine)} ` +
+          `chunk=${String(msg.chunkIndex)}`,
+      );
       switch (msg.type) {
         case "highlightLines":
           if (msg.startLine !== undefined && msg.endLine !== undefined) {
@@ -490,6 +497,7 @@ export class SidePanel {
         });
         el.addEventListener('click', () => {
           const start = parseInt(el.dataset.start, 10);
+          const end = parseInt(el.dataset.end, 10);
           vscode.postMessage({ type: 'revealLines', startLine: start, endLine: end });
         });
       });
@@ -503,6 +511,7 @@ export class SidePanel {
         el.addEventListener('click', e => {
           e.stopPropagation();
           const start = parseInt(el.dataset.start, 10);
+          const end = parseInt(el.dataset.end, 10);
           vscode.postMessage({ type: 'revealLines', startLine: start, endLine: end });
         });
       });
