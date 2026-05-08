@@ -356,6 +356,7 @@ async function ensureApiKeyOrPrompt(
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  const output = vscode.window.createOutputChannel("CodeLumeAI");
   const state: ExtensionState = {
     context,
     cache: new MemoryCache<Translation>(),
@@ -365,8 +366,8 @@ export function activate(context: vscode.ExtensionContext): void {
       100,
     ),
     inFlight: new Map(),
-    output: vscode.window.createOutputChannel("CodeLumeAI"),
-    sidePanel: new SidePanel(),
+    output,
+    sidePanel: new SidePanel(output),
   };
 
   log(state, "info", "Extension activated.");

@@ -26,6 +26,8 @@ export class SidePanel {
   private currentDocument: vscode.TextDocument | undefined;
   private currentTranslation: Translation | undefined;
   private readonly decorationType: vscode.TextEditorDecorationType;
+  private readonly flashDecorationType: vscode.TextEditorDecorationType;
+  private flashTimer: NodeJS.Timeout | undefined;
 
   // Loop-prevention for bidirectional scroll sync.
   // When we sync editor -> panel, we scroll the panel programmatically; that
@@ -35,13 +37,26 @@ export class SidePanel {
   private suppressEditorSyncUntil = 0;
   private suppressPanelSyncUntil = 0;
 
-  constructor() {
+  constructor(private readonly output: vscode.OutputChannel) {
     this.decorationType = vscode.window.createTextEditorDecorationType({
       backgroundColor: new vscode.ThemeColor("editor.selectionHighlightBackground"),
       isWholeLine: true,
       overviewRulerColor: new vscode.ThemeColor("editor.selectionHighlightBackground"),
       overviewRulerLane: vscode.OverviewRulerLane.Right,
     });
+    // A more prominent flash for click-to-jump. Auto-clears after 1.5s.
+    this.flashDecorationType = vscode.window.createTextEditorDecorationType({
+      backgroundColor: new vscode.ThemeColor("editor.findMatchHighlightBackground"),
+      isWholeLine: true,
+      overviewRulerColor: new vscode.ThemeColor("editor.findMatchHighlightBackground"),
+      overviewRulerLane: vscode.OverviewRulerLane.Center,
+    });
+  }
+
+  private log(message: string): void {
+    this.output.appendLine(
+      `[${new Date().toISOString()}] [side-panel] ${message}`,
+    );
   }
 
   /** Open or reveal the panel. If already open, brings it to focus. */
@@ -169,6 +184,10 @@ export class SidePanel {
   dispose(): void {
     this.panel?.dispose();
     this.decorationType.dispose();
+    this.flashDecorationType.dispose();
+    if (this.flashTimer) {
+      clearTimeout(this.flashTimer);
+    }
   }
 
   private highlightLinesInEditor(startLine: number, endLine: number): void {
@@ -225,28 +244,51 @@ export class SidePanel {
     startOneBased: number,
     endOneBased: number,
   ): void {
+    this.log(`revealLines L${startOneBased}–L${endOneBased}`);
     if (!this.currentDocument) {
+      this.log(`  no currentDocument set; click ignored`);
       return;
     }
     const editor = vscode.window.visibleTextEditors.find(
       (e) => e.document === this.currentDocument,
     );
     if (!editor) {
+      this.log(
+        `  no visible editor for ${this.currentDocument.fileName}; ` +
+          `visibleTextEditors had ${vscode.window.visibleTextEditors.length} entries`,
+      );
       return;
     }
     const start = Math.max(0, startOneBased - 1);
     const end = Math.min(editor.document.lineCount - 1, endOneBased - 1);
     if (end < start) {
+      this.log(`  invalid range start=${start} end=${end}`);
       return;
     }
     const endChar = editor.document.lineAt(end).text.length;
     const range = new vscode.Range(start, 0, end, endChar);
-    // InCenter always scrolls (centers the range), so the user sees movement
-    // even if the range was technically already visible.
+
+    // 1) Scroll the chunk's range to the centre of the editor viewport.
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-    // Selecting the whole range gives clear visible feedback that the click
-    // landed on these lines — way more obvious than just placing a cursor.
-    editor.selection = new vscode.Selection(start, 0, end, endChar);
+    // 2) Move the cursor to the start of the chunk (a small, non-disruptive
+    //    selection just at the first line — full-range selection turned out
+    //    to feel too invasive when the user is reading).
+    editor.selection = new vscode.Selection(start, 0, start, 0);
+    // 3) Apply a high-contrast flash highlight across the whole range so the
+    //    user can clearly see WHERE the click landed, then auto-clear after
+    //    1.5 seconds so the editor isn't left visually noisy.
+    editor.setDecorations(this.flashDecorationType, [range]);
+    if (this.flashTimer) {
+      clearTimeout(this.flashTimer);
+    }
+    this.flashTimer = setTimeout(() => {
+      vscode.window.visibleTextEditors.forEach((e) => {
+        e.setDecorations(this.flashDecorationType, []);
+      });
+      this.flashTimer = undefined;
+    }, 1500);
+
+    this.log(`  scrolled + flashed range`);
   }
 
   private buildHtml(): string {
