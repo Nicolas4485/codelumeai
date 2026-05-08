@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Full pre-release verification — same gates as CI on every PR.
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: Sync extension version to git tag
+        working-directory: packages/vscode-extension
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
+          # Use npm version to update package.json without creating a git tag.
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Package .vsix
+        working-directory: packages/vscode-extension
+        run: pnpm exec vsce package --no-dependencies --out "codelumeai-${GITHUB_REF_NAME#v}.vsix"
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ secrets.VSCE_PAT != '' }}
+        working-directory: packages/vscode-extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: pnpm exec vsce publish --no-dependencies --packagePath "codelumeai-${GITHUB_REF_NAME#v}.vsix"
+
+      - name: Create GitHub release with .vsix attached
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/vscode-extension/codelumeai-*.vsix
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

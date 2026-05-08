@@ -129,15 +129,18 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests",
-    "build": "tsc",
-    "vscode:prepublish": "tsc",
-    "package": "vsce package",
+    "build": "rimraf dist && node ./esbuild.mjs",
+    "build:watch": "node ./esbuild.mjs --watch",
+    "vscode:prepublish": "rimraf dist && node ./esbuild.mjs --production",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies",
     "clean": "rimraf dist .turbo *.vsix"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
     "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
     "rimraf": "^6.0.0",
     "typescript": "^5.7.0"
   },

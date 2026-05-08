@@ -1,0 +1,47 @@
+.vscode/**
+.vscode-test/**
+.github/**
+
+# Build scripts — not needed at runtime
+esbuild.mjs
+*.vsix
+
+# Source — only compiled dist/ ships
+src/**
+**/*.ts
+**/*.tsx
+!dist/**/*.d.ts
+
+# Tests
+**/*.test.ts
+**/*.test.js
+**/*.test.d.ts
+**/*.test.js.map
+**/__tests__/**
+test/**
+tests/**
+
+# Build / dev configs
+**/tsconfig.json
+**/tsconfig.*.json
+**/eslint.config.*
+**/.eslintrc*
+**/.prettierrc*
+**/.prettierignore
+**/turbo.json
+**/pnpm-workspace.yaml
+**/pnpm-lock.yaml
+
+# Source maps (saves ~50% of .vsix size; can re-enable if you need traces)
+**/*.map
+
+# Repo metadata
+.gitignore
+.gitattributes
+.npmignore
+.editorconfig
+
+# Workspace junk
+.DS_Store
+Thumbs.db
+**/.turbo/**
