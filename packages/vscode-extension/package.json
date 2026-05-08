@@ -54,6 +54,11 @@
         "command": "codelumeai.translateCurrentFile",
         "title": "Translate Current File",
         "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.showLogs",
+        "title": "Show Logs",
+        "category": "CodeLumeAI"
       }
     ],
     "configuration": {
@@ -77,7 +82,37 @@
           "description": "Skip files larger than this many lines (cost guardrail)."
         }
       }
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "codelumeai.gettingStarted",
+        "title": "Get Started with CodeLumeAI",
+        "description": "Read your code in plain English. Three steps to your first translation.",
+        "steps": [
+          {
+            "id": "setApiKey",
+            "title": "Add your Anthropic API key",
+            "description": "Your key is stored in VS Code's SecretStorage — never in settings.json.\n[Set API Key](command:codelumeai.setApiKey)",
+            "media": { "markdown": "walkthroughs/01-set-api-key.md" },
+            "completionEvents": ["onCommand:codelumeai.setApiKey"]
+          },
+          {
+            "id": "pickMode",
+            "title": "Pick a default mode",
+            "description": "Hover (on-demand), Always-on (inline summaries), or Off. Click the status bar to cycle.\n[Open Settings](command:workbench.action.openSettings?%22codelumeai%22)",
+            "media": { "markdown": "walkthroughs/02-pick-mode.md" },
+            "completionEvents": ["onLink:opened"]
+          },
+          {
+            "id": "tryIt",
+            "title": "Hover any line of code",
+            "description": "Open a code file and move your mouse over a function or class.\n[Translate Current File](command:codelumeai.translateCurrentFile)",
+            "media": { "markdown": "walkthroughs/03-try-it.md" },
+            "completionEvents": ["onCommand:codelumeai.translateCurrentFile"]
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

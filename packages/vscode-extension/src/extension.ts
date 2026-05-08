@@ -37,6 +37,12 @@ interface ExtensionState {
   inlayHintsEmitter: vscode.EventEmitter<void>;
   statusBar: vscode.StatusBarItem;
   inFlight: Map<string, Promise<Translation | undefined>>;
+  output: vscode.OutputChannel;
+}
+
+function log(state: ExtensionState, level: "info" | "error", message: string): void {
+  const ts = new Date().toISOString();
+  state.output.appendLine(`[${ts}] [${level}] ${message}`);
 }
 
 function getMode(): Mode {
@@ -91,6 +97,11 @@ async function getOrFetchTranslation(
   const maxLines = config.get<number>("maxFileLines", 2000);
 
   if (document.lineCount > maxLines) {
+    log(
+      state,
+      "info",
+      `Skipping translation: ${document.lineCount} lines > maxFileLines (${maxLines}).`,
+    );
     return undefined;
   }
 
@@ -113,7 +124,14 @@ async function getOrFetchTranslation(
   }
 
   const filename = document.fileName.split(/[\\/]/).pop();
+  log(
+    state,
+    "info",
+    `Translating ${filename ?? "(unnamed)"} (${document.lineCount} lines, lang=${document.languageId}, model=${model})`,
+  );
+
   const promise = (async (): Promise<Translation | undefined> => {
+    const startedAt = Date.now();
     try {
       const translation = await translate({
         apiKey,
@@ -123,6 +141,12 @@ async function getOrFetchTranslation(
         model,
       });
       state.cache.set(cacheKey, translation);
+      const elapsed = Date.now() - startedAt;
+      log(
+        state,
+        "info",
+        `Translated ${filename ?? "(unnamed)"} in ${elapsed}ms (${translation.chunks.length} chunks).`,
+      );
       return translation;
     } catch (err) {
       const msg =
@@ -131,13 +155,20 @@ async function getOrFetchTranslation(
           : err instanceof Error
             ? err.message
             : String(err);
-      void vscode.window.showErrorMessage(`CodeLumeAI: ${msg}`);
+      log(state, "error", `Translation failed for ${filename ?? "(unnamed)"}: ${msg}`);
+      void vscode.window.showErrorMessage(`CodeLumeAI: ${msg}`, "Show Logs").then((choice) => {
+        if (choice === "Show Logs") {
+          state.output.show();
+        }
+      });
       return undefined;
     } finally {
       state.inFlight.delete(cacheKey);
+      updateStatusBar(state);
     }
   })();
   state.inFlight.set(cacheKey, promise);
+  updateStatusBar(state);
   return promise;
 }
 
@@ -281,9 +312,16 @@ function updateStatusBar(state: ExtensionState): void {
     hover: "$(eye)",
     "always-on": "$(comment)",
   };
-  state.statusBar.text = `${icons[mode]} CodeLumeAI: ${mode}`;
-  state.statusBar.tooltip = "Click to cycle CodeLumeAI mode (Off → Hover → Always-on)";
-  state.statusBar.command = "codelumeai.toggleMode";
+
+  if (state.inFlight.size > 0) {
+    state.statusBar.text = `$(sync~spin) CodeLumeAI: translating…`;
+    state.statusBar.tooltip = `Translating ${state.inFlight.size} file(s). Click for logs.`;
+    state.statusBar.command = "codelumeai.showLogs";
+  } else {
+    state.statusBar.text = `${icons[mode]} CodeLumeAI: ${mode}`;
+    state.statusBar.tooltip = "Click to cycle CodeLumeAI mode (Off → Hover → Always-on)";
+    state.statusBar.command = "codelumeai.toggleMode";
+  }
   state.statusBar.show();
 }
 
@@ -316,11 +354,19 @@ export function activate(context: vscode.ExtensionContext): void {
       100,
     ),
     inFlight: new Map(),
+    output: vscode.window.createOutputChannel("CodeLumeAI"),
   };
+
+  log(state, "info", "Extension activated.");
 
   context.subscriptions.push(
     state.inlayHintsEmitter,
     state.statusBar,
+    state.output,
+
+    vscode.commands.registerCommand("codelumeai.showLogs", () => {
+      state.output.show();
+    }),
 
     vscode.commands.registerCommand("codelumeai.setApiKey", async () => {
       const key = await vscode.window.showInputBox({
@@ -340,6 +386,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await context.secrets.store(SECRET_KEY, key);
       state.cache.clear();
       state.inlayHintsEmitter.fire();
+      log(state, "info", "API key saved.");
       void vscode.window.showInformationMessage("CodeLumeAI: API key saved.");
     }),
 
@@ -347,6 +394,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await context.secrets.delete(SECRET_KEY);
       state.cache.clear();
       state.inlayHintsEmitter.fire();
+      log(state, "info", "API key cleared.");
       void vscode.window.showInformationMessage("CodeLumeAI: API key cleared.");
     }),
 
