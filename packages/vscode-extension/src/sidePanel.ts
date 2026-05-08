@@ -2,10 +2,9 @@ import * as vscode from "vscode";
 import type { Translation } from "@codelumeai/core";
 
 interface WebviewMessage {
-  type: "highlightLines" | "clearHighlight" | "revealLine";
+  type: "highlightLines" | "clearHighlight" | "revealLines";
   startLine?: number;
   endLine?: number;
-  line?: number;
 }
 
 /**
@@ -66,9 +65,9 @@ export class SidePanel {
         case "clearHighlight":
           this.clearEditorHighlights();
           return;
-        case "revealLine":
-          if (msg.line !== undefined) {
-            this.revealLineInEditor(msg.line);
+        case "revealLines":
+          if (msg.startLine !== undefined && msg.endLine !== undefined) {
+            this.revealLinesInEditor(msg.startLine, msg.endLine);
           }
           return;
       }
@@ -144,7 +143,10 @@ export class SidePanel {
     });
   }
 
-  private revealLineInEditor(oneBasedLine: number): void {
+  private revealLinesInEditor(
+    startOneBased: number,
+    endOneBased: number,
+  ): void {
     if (!this.currentDocument) {
       return;
     }
@@ -154,10 +156,19 @@ export class SidePanel {
     if (!editor) {
       return;
     }
-    const lineIdx = Math.max(0, oneBasedLine - 1);
-    const range = new vscode.Range(lineIdx, 0, lineIdx, 0);
-    editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    editor.selection = new vscode.Selection(lineIdx, 0, lineIdx, 0);
+    const start = Math.max(0, startOneBased - 1);
+    const end = Math.min(editor.document.lineCount - 1, endOneBased - 1);
+    if (end < start) {
+      return;
+    }
+    const endChar = editor.document.lineAt(end).text.length;
+    const range = new vscode.Range(start, 0, end, endChar);
+    // InCenter always scrolls (centers the range), so the user sees movement
+    // even if the range was technically already visible.
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+    // Selecting the whole range gives clear visible feedback that the click
+    // landed on these lines — way more obvious than just placing a cursor.
+    editor.selection = new vscode.Selection(start, 0, end, endChar);
   }
 
   private buildHtml(): string {
@@ -359,7 +370,7 @@ export class SidePanel {
         });
         el.addEventListener('click', () => {
           const start = parseInt(el.dataset.start, 10);
-          vscode.postMessage({ type: 'revealLine', line: start });
+          vscode.postMessage({ type: 'revealLines', startLine: start, endLine: end });
         });
       });
       document.querySelectorAll('.line-entry').forEach(el => {
@@ -372,7 +383,7 @@ export class SidePanel {
         el.addEventListener('click', e => {
           e.stopPropagation();
           const start = parseInt(el.dataset.start, 10);
-          vscode.postMessage({ type: 'revealLine', line: start });
+          vscode.postMessage({ type: 'revealLines', startLine: start, endLine: end });
         });
       });
     }
