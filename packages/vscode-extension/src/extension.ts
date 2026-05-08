@@ -9,6 +9,7 @@ import {
   type LineEntry,
 } from "@codelumeai/core";
 import { SidePanel } from "./sidePanel";
+import { EditFlow } from "./editFlow";
 
 const SECRET_KEY = "codelumeai.apiKey";
 const CACHE_SCHEMA_VERSION = "v2";
@@ -421,6 +422,7 @@ async function ensureApiKeyOrPrompt(
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("CodeLumeAI");
+  const editFlow = new EditFlow(context, context.secrets, output);
   const state: ExtensionState = {
     context,
     cache: new MemoryCache<Translation>(),
@@ -431,7 +433,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     inFlight: new Map(),
     output,
-    sidePanel: new SidePanel(output),
+    sidePanel: new SidePanel(output, editFlow),
   };
 
   log(state, "info", "Extension activated.");

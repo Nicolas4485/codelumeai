@@ -1,15 +1,19 @@
 import * as vscode from "vscode";
 import type { Translation } from "@codelumeai/core";
+import type { EditFlow } from "./editFlow";
 
 interface WebviewMessage {
   type:
     | "highlightLines"
     | "clearHighlight"
     | "revealLines"
-    | "panelScrolled";
+    | "panelScrolled"
+    | "applyEdit";
   startLine?: number;
   endLine?: number;
   chunkIndex?: number;
+  originalEnglish?: string;
+  newEnglish?: string;
 }
 
 /**
@@ -37,7 +41,10 @@ export class SidePanel {
   private suppressEditorSyncUntil = 0;
   private suppressPanelSyncUntil = 0;
 
-  constructor(private readonly output: vscode.OutputChannel) {
+  constructor(
+    private readonly output: vscode.OutputChannel,
+    private readonly editFlow: EditFlow,
+  ) {
     this.decorationType = vscode.window.createTextEditorDecorationType({
       backgroundColor: new vscode.ThemeColor("editor.selectionHighlightBackground"),
       isWholeLine: true,
@@ -115,6 +122,23 @@ export class SidePanel {
             }
             this.suppressEditorSyncUntil = Date.now() + 300;
             this.alignEditorWithChunk(msg.chunkIndex);
+          }
+          return;
+        case "applyEdit":
+          if (
+            msg.startLine !== undefined &&
+            msg.endLine !== undefined &&
+            msg.originalEnglish !== undefined &&
+            msg.newEnglish !== undefined &&
+            this.currentDocument
+          ) {
+            void this.editFlow.apply({
+              document: this.currentDocument,
+              startLine: msg.startLine,
+              endLine: msg.endLine,
+              originalEnglish: msg.originalEnglish,
+              newEnglish: msg.newEnglish,
+            });
           }
           return;
       }
@@ -428,6 +452,77 @@ export class SidePanel {
       border-left: 3px solid var(--vscode-inputValidation-warningBorder, #ffb300);
       font-size: 0.9em;
     }
+
+    /* ---- Inline edit UI ---- */
+    .edit-btn {
+      margin-left: 8px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 0.85em;
+      padding: 1px 6px;
+      border-radius: 3px;
+      opacity: 0.35;
+      transition: opacity 0.12s ease, background 0.12s ease;
+      vertical-align: baseline;
+    }
+    .line-entry:hover .edit-btn { opacity: 1; }
+    .edit-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+    }
+    .edit-mode {
+      margin-top: 6px;
+      padding: 8px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-focusBorder);
+      border-radius: 4px;
+    }
+    .edit-textarea {
+      display: block;
+      width: 100%;
+      min-height: 56px;
+      padding: 6px 8px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, transparent);
+      border-radius: 3px;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      resize: vertical;
+      box-sizing: border-box;
+    }
+    .edit-textarea:focus { outline: none; border-color: var(--vscode-focusBorder); }
+    .edit-hint {
+      font-size: 0.78em;
+      color: var(--vscode-descriptionForeground);
+      margin-top: 6px;
+    }
+    .edit-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .edit-btn-apply, .edit-btn-cancel {
+      padding: 3px 12px;
+      font-size: 0.85em;
+      border-radius: 3px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      font-family: var(--vscode-font-family);
+    }
+    .edit-btn-apply {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    .edit-btn-apply:hover { background: var(--vscode-button-hoverBackground); }
+    .edit-btn-cancel {
+      background: var(--vscode-button-secondaryBackground, transparent);
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+    }
+    .edit-btn-cancel:hover {
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+    }
   </style>
 </head>
 <body>
@@ -465,7 +560,8 @@ export class SidePanel {
         const linesHtml = (c.lines || []).map(l => {
           return '<li class="line-entry" data-start="' + l.startLine + '" data-end="' + l.endLine + '">' +
             '<span class="line-range">' + fmtRange(l.startLine, l.endLine) + '</span>' +
-            escapeHtml(l.english) +
+            '<span class="line-text">' + escapeHtml(l.english) + '</span>' +
+            '<button class="edit-btn" title="Edit and apply to code">✎</button>' +
           '</li>';
         }).join('');
         const noteHtml = c.note ? '<div class="note">⚠ ' + escapeHtml(c.note) + '</div>' : '';

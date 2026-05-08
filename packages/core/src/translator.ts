@@ -1,12 +1,20 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { FAITHFUL_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT } from "./prompts";
 import {
+  ENGLISH_TO_CODE_SYSTEM_PROMPT,
+  FAITHFUL_SYSTEM_PROMPT,
+  SUMMARY_SYSTEM_PROMPT,
+} from "./prompts";
+import {
+  CODE_CHANGE_TOOL_INPUT_SCHEMA,
+  CodeChangeSchema,
   TRANSLATION_TOOL_INPUT_SCHEMA,
   TranslationSchema,
+  type CodeChange,
   type Translation,
 } from "./schemas";
 
 const TOOL_NAME = "submit_translation";
+const CODE_CHANGE_TOOL_NAME = "submit_code_change";
 
 export type TranslationMode = "faithful" | "summary";
 
@@ -127,6 +135,120 @@ export async function translate(opts: TranslateOptions): Promise<Translation> {
     throw new TranslationError(
       `Model output failed schema validation — ${issues}${more} ` +
         `[stop_reason=${String(response.stop_reason)}, keys_present=${presentKeys}]`,
+      parsed.error,
+    );
+  }
+
+  return parsed.data;
+}
+
+// ============================================================
+// English → Code
+// ============================================================
+
+export interface EnglishToCodeOptions {
+  apiKey: string;
+  source: string;
+  language: string;
+  filename?: string;
+  /** 1-indexed inclusive line range to replace. */
+  startLine: number;
+  /** 1-indexed inclusive line range to replace. */
+  endLine: number;
+  /** The English that was previously generated for this range. */
+  originalEnglish: string;
+  /** The user's edited English — what they now want this range to do. */
+  newEnglish: string;
+  model?: string;
+  maxTokens?: number;
+}
+
+const DEFAULT_CODE_CHANGE_MAX_TOKENS = 8192;
+
+/**
+ * Translate a user's edited English instruction back into source code that
+ * replaces a specific line range. Used by the side panel's edit flow:
+ * user changes the English, we generate a code change, the extension
+ * shows it as a diff for the user to confirm.
+ */
+export async function englishToCode(
+  opts: EnglishToCodeOptions,
+): Promise<CodeChange> {
+  const client = new Anthropic({ apiKey: opts.apiKey });
+
+  const numberedSource = opts.source
+    .split("\n")
+    .map((line, i) => `${String(i + 1).padStart(4, " ")}: ${line}`)
+    .join("\n");
+
+  const userMessage = [
+    `Language: ${opts.language}`,
+    `File: ${opts.filename ?? "(unnamed)"}`,
+    `Range to replace: lines ${String(opts.startLine)} to ${String(opts.endLine)} (1-indexed, inclusive).`,
+    "",
+    "Original English (what was generated for this range before):",
+    "```",
+    opts.originalEnglish,
+    "```",
+    "",
+    "User's edited English (what they want this range to do now):",
+    "```",
+    opts.newEnglish,
+    "```",
+    "",
+    "Source (each line prefixed with its 1-indexed line number followed by `: `):",
+    "```",
+    numberedSource,
+    "```",
+  ].join("\n");
+
+  let response;
+  try {
+    const stream = client.messages.stream({
+      model: opts.model ?? DEFAULT_MODEL,
+      max_tokens: opts.maxTokens ?? DEFAULT_CODE_CHANGE_MAX_TOKENS,
+      system: ENGLISH_TO_CODE_SYSTEM_PROMPT,
+      tools: [
+        {
+          name: CODE_CHANGE_TOOL_NAME,
+          description:
+            "Submit the proposed code change for the given line range. Always call this tool exactly once.",
+          input_schema:
+            CODE_CHANGE_TOOL_INPUT_SCHEMA as unknown as Anthropic.Tool.InputSchema,
+        },
+      ],
+      tool_choice: { type: "tool", name: CODE_CHANGE_TOOL_NAME },
+      messages: [{ role: "user", content: userMessage }],
+    });
+    response = await stream.finalMessage();
+  } catch (err) {
+    throw new TranslationError(
+      `Anthropic API call failed: ${err instanceof Error ? err.message : String(err)}`,
+      err,
+    );
+  }
+
+  if (response.stop_reason === "max_tokens") {
+    throw new TranslationError(
+      "Model hit max_tokens before finishing the change. Try a shorter instruction.",
+    );
+  }
+
+  const toolUse = response.content.find((b) => b.type === "tool_use");
+  if (!toolUse || toolUse.type !== "tool_use") {
+    throw new TranslationError(
+      `Model did not return a tool_use block (stop_reason=${String(response.stop_reason)}).`,
+    );
+  }
+
+  const parsed = CodeChangeSchema.safeParse(toolUse.input);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .slice(0, 2)
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    throw new TranslationError(
+      `Model output failed schema validation — ${issues}`,
       parsed.error,
     );
   }

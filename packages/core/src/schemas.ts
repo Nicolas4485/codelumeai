@@ -38,6 +38,52 @@ export const TranslationSchema = z
   .passthrough();
 export type Translation = z.infer<typeof TranslationSchema>;
 
+export const CodeChangeSchema = z
+  .object({
+    startLine: z.number().int().min(1),
+    endLine: z.number().int().min(1),
+    newCode: z.string(),
+    confidence: ConfidenceSchema,
+    note: z
+      .string()
+      .nullable()
+      .optional()
+      .transform((v) => v ?? undefined),
+    warnings: z
+      .array(z.string())
+      .nullable()
+      .optional()
+      .transform((v) => v ?? undefined),
+  })
+  .passthrough();
+export type CodeChange = z.infer<typeof CodeChangeSchema>;
+
+export const CODE_CHANGE_TOOL_INPUT_SCHEMA = {
+  type: "object",
+  required: ["startLine", "endLine", "newCode", "confidence"],
+  properties: {
+    startLine: { type: "integer", minimum: 1 },
+    endLine: { type: "integer", minimum: 1 },
+    newCode: {
+      type: "string",
+      description:
+        "The replacement code for lines startLine..endLine. Just those lines, no surrounding context.",
+    },
+    confidence: { type: "string", enum: ["high", "medium", "low"] },
+    note: {
+      type: "string",
+      description:
+        "Required for medium/low confidence — one sentence explaining why.",
+    },
+    warnings: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Issues the user should know about, e.g. 'EmptyInputError is not defined or imported in this file'.",
+    },
+  },
+} as const;
+
 export const TRANSLATION_TOOL_INPUT_SCHEMA = {
   type: "object",
   required: ["primer", "chunks"],
