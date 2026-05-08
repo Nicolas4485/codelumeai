@@ -7,10 +7,11 @@ export type { Cache, CacheEntry } from "./cache";
 export {
   TranslationSchema,
   ChunkSchema,
+  LineEntrySchema,
   ConfidenceSchema,
   TRANSLATION_TOOL_INPUT_SCHEMA,
 } from "./schemas";
-export type { Translation, Chunk, Confidence } from "./schemas";
+export type { Translation, Chunk, LineEntry, Confidence } from "./schemas";
 
 export {
   FAITHFUL_SYSTEM_PROMPT,

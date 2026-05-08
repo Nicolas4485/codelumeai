@@ -44,13 +44,18 @@ export async function translate(opts: TranslateOptions): Promise<Translation> {
 
   const client = new Anthropic({ apiKey: opts.apiKey });
 
+  const numberedSource = opts.source
+    .split("\n")
+    .map((line, i) => `${String(i + 1).padStart(4, " ")}: ${line}`)
+    .join("\n");
+
   const userMessage = [
     `Language: ${opts.language}`,
     `File: ${opts.filename ?? "(unnamed)"}`,
     "",
-    "Source:",
-    "```" + opts.language,
-    opts.source,
+    "Source (each line is prefixed with its 1-indexed line number followed by `: `):",
+    "```",
+    numberedSource,
     "```",
   ].join("\n");
 

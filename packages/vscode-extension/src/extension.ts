@@ -6,9 +6,11 @@ import {
   TranslationError,
   type Translation,
   type Chunk,
+  type LineEntry,
 } from "@codelumeai/core";
 
 const SECRET_KEY = "codelumeai.apiKey";
+const CACHE_SCHEMA_VERSION = "v2";
 
 const SUPPORTED_LANGUAGES = [
   "python",
@@ -59,6 +61,22 @@ function chunkContainingLine(
   );
 }
 
+function lineEntryContainingLine(
+  chunk: Chunk,
+  zeroBasedLine: number,
+): LineEntry | undefined {
+  const oneBased = zeroBasedLine + 1;
+  return chunk.lines.find(
+    (l) => l.startLine <= oneBased && l.endLine >= oneBased,
+  );
+}
+
+function formatLineRange(startLine: number, endLine: number): string {
+  return startLine === endLine
+    ? `Line ${String(startLine)}`
+    : `Lines ${String(startLine)}–${String(endLine)}`;
+}
+
 async function getOrFetchTranslation(
   state: ExtensionState,
   document: vscode.TextDocument,
@@ -77,15 +95,18 @@ async function getOrFetchTranslation(
   }
 
   const source = document.getText();
-  const cacheKey = hashContent(source, document.languageId, model);
+  const cacheKey = hashContent(
+    source,
+    document.languageId,
+    model,
+    CACHE_SCHEMA_VERSION,
+  );
 
   const cached = state.cache.get(cacheKey);
   if (cached) {
     return cached.value;
   }
 
-  // De-duplicate concurrent requests for the same cache key (multiple
-  // providers may both ask for the same translation in the same tick).
   const inFlight = state.inFlight.get(cacheKey);
   if (inFlight) {
     return inFlight;
@@ -145,19 +166,44 @@ class CodeLumeHoverProvider implements vscode.HoverProvider {
       return undefined;
     }
 
-    const md = new vscode.MarkdownString();
-    md.isTrusted = false;
-    md.supportHtml = false;
-    md.appendMarkdown(`**CodeLumeAI** — ${chunk.title}  \n`);
-    md.appendMarkdown(
-      `_Lines ${String(chunk.startLine)}–${String(chunk.endLine)} · confidence: \`${chunk.confidence}\`_\n\n`,
-    );
-    md.appendMarkdown(chunk.english);
-    if (chunk.note) {
-      md.appendMarkdown(`\n\n> ⚠ ${chunk.note}`);
+    const lineEntry = lineEntryContainingLine(chunk, position.line);
+    const sections: vscode.MarkdownString[] = [];
+
+    // Section 1 — focused on the line under the cursor (when there's a match).
+    if (lineEntry) {
+      const lineMd = new vscode.MarkdownString();
+      lineMd.supportThemeIcons = true;
+      lineMd.appendMarkdown(
+        `$(symbol-text) **CodeLumeAI · ${formatLineRange(lineEntry.startLine, lineEntry.endLine)}**\n\n`,
+      );
+      lineMd.appendMarkdown(lineEntry.english);
+      sections.push(lineMd);
     }
 
-    return new vscode.Hover(md);
+    // Section 2 — the surrounding chunk: title, summary, all line bullets.
+    const chunkMd = new vscode.MarkdownString();
+    chunkMd.supportThemeIcons = true;
+    chunkMd.appendMarkdown(
+      `$(symbol-namespace) **CodeLumeAI · ${chunk.title}**\n\n`,
+    );
+    chunkMd.appendMarkdown(
+      `_${formatLineRange(chunk.startLine, chunk.endLine)} · confidence: \`${chunk.confidence}\`_\n\n`,
+    );
+    chunkMd.appendMarkdown(`${chunk.summary}\n\n`);
+    if (chunk.lines.length > 0) {
+      chunkMd.appendMarkdown(`**Lines:**\n\n`);
+      for (const l of chunk.lines) {
+        chunkMd.appendMarkdown(
+          `- **${formatLineRange(l.startLine, l.endLine)}** — ${l.english}\n`,
+        );
+      }
+    }
+    if (chunk.note) {
+      chunkMd.appendMarkdown(`\n> ⚠ ${chunk.note}`);
+    }
+    sections.push(chunkMd);
+
+    return new vscode.Hover(sections);
   }
 }
 
@@ -198,28 +244,30 @@ class CodeLumeInlayHintsProvider implements vscode.InlayHintsProvider {
       const line = document.lineAt(lineIdx);
       const position = new vscode.Position(lineIdx, line.text.length);
 
-      let summary =
-        chunk.english
-          .split("\n")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0)[0] ?? "";
-      summary = summary.replace(/^[-*•]\s*/, "");
+      let summary = chunk.summary.trim().split("\n")[0] ?? "";
       if (summary.length > 80) {
         summary = summary.slice(0, 77) + "…";
       }
 
-      const hint = new vscode.InlayHint(
-        position,
-        ` ▸ ${summary}`,
-      );
+      const hint = new vscode.InlayHint(position, ` ▸ ${summary}`);
       hint.paddingLeft = true;
+
       const tooltip = new vscode.MarkdownString();
       tooltip.appendMarkdown(`**${chunk.title}** _(${chunk.confidence})_\n\n`);
-      tooltip.appendMarkdown(chunk.english);
+      tooltip.appendMarkdown(`${chunk.summary}\n\n`);
+      if (chunk.lines.length > 0) {
+        tooltip.appendMarkdown(`**Lines:**\n\n`);
+        for (const l of chunk.lines) {
+          tooltip.appendMarkdown(
+            `- **${formatLineRange(l.startLine, l.endLine)}** — ${l.english}\n`,
+          );
+        }
+      }
       if (chunk.note) {
-        tooltip.appendMarkdown(`\n\n> ⚠ ${chunk.note}`);
+        tooltip.appendMarkdown(`\n> ⚠ ${chunk.note}`);
       }
       hint.tooltip = tooltip;
+
       hints.push(hint);
     }
     return hints;
