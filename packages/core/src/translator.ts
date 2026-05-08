@@ -22,10 +22,10 @@ export interface TranslateOptions {
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
 // Faithful translations include a primer + chunks * (summary + per-line bullets).
-// A 250-line file with rich line breakdown easily produces 8–12K output tokens.
-// 16K gives plenty of headroom; we surface stop_reason: "max_tokens" with a
-// clear error if even this isn't enough.
-const DEFAULT_MAX_TOKENS = 16384;
+// A 250-line file with rich per-declaration breakdown can easily exceed 16K.
+// Claude Haiku 4.5 supports up to 64K output tokens, so we set a generous
+// 32K default — well below the model cap, well above what most files need.
+const DEFAULT_MAX_TOKENS = 32768;
 
 export class TranslationError extends Error {
   constructor(message: string, cause?: unknown) {
@@ -97,8 +97,8 @@ export async function translate(opts: TranslateOptions): Promise<Translation> {
   const toolUse = response.content.find((b) => b.type === "tool_use");
   if (!toolUse || toolUse.type !== "tool_use") {
     throw new TranslationError(
-      "Model did not return a tool_use block. Response was: " +
-        JSON.stringify(response.content).slice(0, 200),
+      `Model did not return a tool_use block (stop_reason=${String(response.stop_reason)}). ` +
+        `Response: ${JSON.stringify(response.content).slice(0, 200)}`,
     );
   }
 
@@ -113,8 +113,15 @@ export async function translate(opts: TranslateOptions): Promise<Translation> {
       parsed.error.issues.length > 2
         ? ` (+${String(parsed.error.issues.length - 2)} more)`
         : "";
+    // Include stop_reason and the keys actually present so we know WHY chunks
+    // is missing — was the response truncated, or did the model just skip it?
+    const presentKeys =
+      toolUse.input && typeof toolUse.input === "object"
+        ? Object.keys(toolUse.input).join(",")
+        : "(none)";
     throw new TranslationError(
-      `Model output failed schema validation — ${issues}${more}`,
+      `Model output failed schema validation — ${issues}${more} ` +
+        `[stop_reason=${String(response.stop_reason)}, keys_present=${presentKeys}]`,
       parsed.error,
     );
   }
