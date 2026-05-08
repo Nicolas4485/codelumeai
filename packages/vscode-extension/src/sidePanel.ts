@@ -2,9 +2,14 @@ import * as vscode from "vscode";
 import type { Translation } from "@codelumeai/core";
 
 interface WebviewMessage {
-  type: "highlightLines" | "clearHighlight" | "revealLines";
+  type:
+    | "highlightLines"
+    | "clearHighlight"
+    | "revealLines"
+    | "panelScrolled";
   startLine?: number;
   endLine?: number;
+  chunkIndex?: number;
 }
 
 /**
@@ -21,6 +26,14 @@ export class SidePanel {
   private currentDocument: vscode.TextDocument | undefined;
   private currentTranslation: Translation | undefined;
   private readonly decorationType: vscode.TextEditorDecorationType;
+
+  // Loop-prevention for bidirectional scroll sync.
+  // When we sync editor -> panel, we scroll the panel programmatically; that
+  // triggers a panel scroll event which would otherwise sync back to the
+  // editor. The same in reverse. Each suppressXUntil timestamp says
+  // "ignore X-direction scroll events until this Date.now() value".
+  private suppressEditorSyncUntil = 0;
+  private suppressPanelSyncUntil = 0;
 
   constructor() {
     this.decorationType = vscode.window.createTextEditorDecorationType({
@@ -67,7 +80,19 @@ export class SidePanel {
           return;
         case "revealLines":
           if (msg.startLine !== undefined && msg.endLine !== undefined) {
+            // The editor scroll caused by revealRange would otherwise echo
+            // back to us as a panel-sync request. Suppress that echo.
+            this.suppressEditorSyncUntil = Date.now() + 300;
             this.revealLinesInEditor(msg.startLine, msg.endLine);
+          }
+          return;
+        case "panelScrolled":
+          if (msg.chunkIndex !== undefined) {
+            if (Date.now() < this.suppressPanelSyncUntil) {
+              return; // this scroll was caused by us syncing editor -> panel
+            }
+            this.suppressEditorSyncUntil = Date.now() + 300;
+            this.alignEditorWithChunk(msg.chunkIndex);
           }
           return;
       }
@@ -108,6 +133,35 @@ export class SidePanel {
     }
   }
 
+  /**
+   * Editor scrolled — sync the panel to follow.
+   * Called from extension.ts on every onDidChangeTextEditorVisibleRanges.
+   */
+  syncPanelToEditorScroll(zeroBasedTopLine: number): void {
+    if (!this.panel || !this.currentTranslation) {
+      return;
+    }
+    if (Date.now() < this.suppressEditorSyncUntil) {
+      return; // this scroll was caused by us syncing panel -> editor
+    }
+    const oneBased = zeroBasedTopLine + 1;
+    // Find the chunk that contains the top visible line, falling back to the
+    // first chunk that starts after if we're between chunks.
+    let chunkIndex = this.currentTranslation.chunks.findIndex(
+      (c) => c.startLine <= oneBased && c.endLine >= oneBased,
+    );
+    if (chunkIndex < 0) {
+      chunkIndex = this.currentTranslation.chunks.findIndex(
+        (c) => c.endLine >= oneBased,
+      );
+    }
+    if (chunkIndex < 0) {
+      return;
+    }
+    this.suppressPanelSyncUntil = Date.now() + 300;
+    void this.panel.webview.postMessage({ type: "scrollToChunk", chunkIndex });
+  }
+
   isOpen(): boolean {
     return this.panel !== undefined;
   }
@@ -141,6 +195,30 @@ export class SidePanel {
     vscode.window.visibleTextEditors.forEach((e) => {
       e.setDecorations(this.decorationType, []);
     });
+  }
+
+  /**
+   * Panel scrolled past chunk N — scroll the editor so chunk N's first line
+   * sits at the top of the viewport. Called when the panel sends a
+   * panelScrolled message.
+   */
+  private alignEditorWithChunk(chunkIndex: number): void {
+    if (!this.currentDocument || !this.currentTranslation) {
+      return;
+    }
+    const chunk = this.currentTranslation.chunks[chunkIndex];
+    if (!chunk) {
+      return;
+    }
+    const editor = vscode.window.visibleTextEditors.find(
+      (e) => e.document === this.currentDocument,
+    );
+    if (!editor) {
+      return;
+    }
+    const lineIdx = Math.max(0, Math.min(editor.document.lineCount - 1, chunk.startLine - 1));
+    const range = new vscode.Range(lineIdx, 0, lineIdx, 0);
+    editor.revealRange(range, vscode.TextEditorRevealType.AtTop);
   }
 
   private revealLinesInEditor(
@@ -397,12 +475,53 @@ export class SidePanel {
       }
     }
 
+    // ---- Scroll sync ----
+    // We programmatically scroll on 'scrollToChunk' messages from the
+    // extension. That programmatic scroll fires our scroll listener; we
+    // need to suppress the resulting 'panelScrolled' message to avoid a
+    // sync loop. \`scrollSyncing\` is the suppression flag.
+    let scrollSyncing = false;
+    let scrollDebounce = null;
+
+    function scrollToChunk(index) {
+      const el = document.querySelector('[data-chunk="' + index + '"]');
+      if (!el) return;
+      scrollSyncing = true;
+      el.scrollIntoView({ behavior: 'auto', block: 'start' });
+      // Allow some frames for the scroll to settle, then re-arm.
+      setTimeout(() => { scrollSyncing = false; }, 250);
+    }
+
+    function topMostVisibleChunkIndex() {
+      const chunks = document.querySelectorAll('.chunk');
+      for (let i = 0; i < chunks.length; i++) {
+        const rect = chunks[i].getBoundingClientRect();
+        // Pick the first chunk whose bottom is below the top of the viewport.
+        if (rect.bottom > 0) return i;
+      }
+      return -1;
+    }
+
+    document.addEventListener('scroll', () => {
+      if (scrollSyncing) return;
+      if (scrollDebounce) clearTimeout(scrollDebounce);
+      scrollDebounce = setTimeout(() => {
+        const idx = topMostVisibleChunkIndex();
+        if (idx >= 0) {
+          vscode.postMessage({ type: 'panelScrolled', chunkIndex: idx });
+        }
+      }, 80);
+    }, { passive: true });
+
     window.addEventListener('message', event => {
       const msg = event.data;
-      if (msg && msg.type === 'update') {
+      if (!msg) return;
+      if (msg.type === 'update') {
         render(msg.translation);
-      } else if (msg && msg.type === 'highlightChunk') {
+      } else if (msg.type === 'highlightChunk') {
         highlightChunk(msg.chunkIndex);
+      } else if (msg.type === 'scrollToChunk') {
+        scrollToChunk(msg.chunkIndex);
       }
     });
   </script>

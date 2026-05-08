@@ -542,6 +542,21 @@ export function activate(context: vscode.ExtensionContext): void {
         state.sidePanel.highlightChunkForEditorLine(line);
       }
     }),
+
+    vscode.window.onDidChangeTextEditorVisibleRanges((e) => {
+      // Continuous scroll sync: when the editor's visible range changes,
+      // tell the panel to scroll to the matching chunk.
+      if (!state.sidePanel.isOpen()) {
+        return;
+      }
+      if (!SUPPORTED_LANGUAGES.includes(e.textEditor.document.languageId)) {
+        return;
+      }
+      const topLine = e.visibleRanges[0]?.start.line;
+      if (topLine !== undefined) {
+        state.sidePanel.syncPanelToEditorScroll(topLine);
+      }
+    }),
   );
 }
 
