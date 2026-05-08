@@ -89,11 +89,11 @@
     "clean": "rimraf dist .turbo *.vsix"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^25.6.2",
     "@types/vscode": "^1.95.0",
     "@vscode/vsce": "^3.2.0",
     "rimraf": "^6.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "@codelumeai/core": "workspace:*"
