@@ -455,21 +455,28 @@ export class SidePanel {
 
     /* ---- Inline edit UI ---- */
     .edit-btn {
-      margin-left: 8px;
-      background: transparent;
-      border: 1px solid transparent;
-      color: var(--vscode-descriptionForeground);
+      display: inline-block;
+      margin-left: 10px;
+      background: var(--vscode-button-secondaryBackground, var(--vscode-list-hoverBackground));
+      border: 1px solid var(--vscode-button-border, var(--vscode-focusBorder));
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
       cursor: pointer;
-      font-size: 0.85em;
-      padding: 1px 6px;
+      font-size: 0.95em;
+      line-height: 1;
+      padding: 2px 8px;
       border-radius: 3px;
-      opacity: 0.35;
-      transition: opacity 0.12s ease, background 0.12s ease;
+      opacity: 0.85;
+      transition: opacity 0.12s ease, background 0.12s ease, transform 0.12s ease;
       vertical-align: baseline;
+      font-family: inherit;
     }
     .line-entry:hover .edit-btn { opacity: 1; }
     .edit-btn:hover {
-      background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+      transform: scale(1.05);
+    }
+    .edit-btn:active {
+      transform: scale(0.95);
     }
     .edit-mode {
       margin-top: 6px;
@@ -600,16 +607,126 @@ export class SidePanel {
       document.querySelectorAll('.line-entry').forEach(el => {
         el.addEventListener('mouseenter', e => {
           e.stopPropagation();
+          if (el.querySelector('.edit-mode')) return;
           const start = parseInt(el.dataset.start, 10);
           const end = parseInt(el.dataset.end, 10);
           vscode.postMessage({ type: 'highlightLines', startLine: start, endLine: end });
         });
         el.addEventListener('click', e => {
           e.stopPropagation();
+          if (el.querySelector('.edit-mode')) return;
+          // Don't trigger reveal-on-click if the user clicked the pencil button
+          // (or anywhere inside it).
+          if (e.target && e.target.closest && e.target.closest('.edit-btn')) return;
           const start = parseInt(el.dataset.start, 10);
           const end = parseInt(el.dataset.end, 10);
           vscode.postMessage({ type: 'revealLines', startLine: start, endLine: end });
         });
+        // Double-click anywhere on a bullet → enter edit mode (backup for the
+        // pencil button, which is small and easy to miss).
+        el.addEventListener('dblclick', e => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (el.querySelector('.edit-mode')) return;
+          const start = parseInt(el.dataset.start, 10);
+          const end = parseInt(el.dataset.end, 10);
+          const textSpan = el.querySelector('.line-text');
+          const original = textSpan ? textSpan.textContent : '';
+          enterEditMode(el, start, end, original);
+        });
+      });
+
+      // Pencil button → enter edit mode for that line bullet.
+      document.querySelectorAll('.edit-btn').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          e.preventDefault();
+          const lineEntry = btn.closest('.line-entry');
+          if (!lineEntry || lineEntry.querySelector('.edit-mode')) return;
+          const start = parseInt(lineEntry.dataset.start, 10);
+          const end = parseInt(lineEntry.dataset.end, 10);
+          const textSpan = lineEntry.querySelector('.line-text');
+          const original = textSpan ? textSpan.textContent : '';
+          enterEditMode(lineEntry, start, end, original);
+        });
+      });
+    }
+
+    let activeEditCleanup = null;
+
+    function enterEditMode(lineEntry, startLine, endLine, originalText) {
+      // Cancel any other in-progress edit so we never have two textareas at once.
+      if (activeEditCleanup) activeEditCleanup();
+
+      const textSpan = lineEntry.querySelector('.line-text');
+      const editBtn = lineEntry.querySelector('.edit-btn');
+      if (textSpan) textSpan.style.display = 'none';
+      if (editBtn) editBtn.style.display = 'none';
+
+      const wrap = document.createElement('div');
+      wrap.className = 'edit-mode';
+
+      const textarea = document.createElement('textarea');
+      textarea.className = 'edit-textarea';
+      textarea.rows = 3;
+      textarea.value = originalText;
+
+      const hint = document.createElement('div');
+      hint.className = 'edit-hint';
+      hint.textContent = 'Describe what you want this code to do. Cmd/Ctrl+Enter to apply, Esc to cancel.';
+
+      const actions = document.createElement('div');
+      actions.className = 'edit-actions';
+      const apply = document.createElement('button');
+      apply.className = 'edit-btn-apply';
+      apply.textContent = 'Apply';
+      const cancel = document.createElement('button');
+      cancel.className = 'edit-btn-cancel';
+      cancel.textContent = 'Cancel';
+      actions.appendChild(apply);
+      actions.appendChild(cancel);
+
+      wrap.appendChild(textarea);
+      wrap.appendChild(hint);
+      wrap.appendChild(actions);
+      lineEntry.appendChild(wrap);
+
+      setTimeout(() => { textarea.focus(); textarea.select(); }, 0);
+
+      function cleanup() {
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        if (textSpan) textSpan.style.display = '';
+        if (editBtn) editBtn.style.display = '';
+        activeEditCleanup = null;
+      }
+      activeEditCleanup = cleanup;
+
+      function doApply() {
+        const newEnglish = textarea.value.trim();
+        if (!newEnglish || newEnglish === originalText.trim()) {
+          cleanup();
+          return;
+        }
+        vscode.postMessage({
+          type: 'applyEdit',
+          startLine: startLine,
+          endLine: endLine,
+          originalEnglish: originalText,
+          newEnglish: newEnglish
+        });
+        cleanup();
+      }
+
+      apply.addEventListener('click', doApply);
+      cancel.addEventListener('click', cleanup);
+      textarea.addEventListener('keydown', e => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          doApply();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          cleanup();
+        }
       });
     }
 
