@@ -42,9 +42,48 @@ interface ExtensionState {
   sidePanel: SidePanel;
 }
 
-function log(state: ExtensionState, level: "info" | "error", message: string): void {
+function log(
+  state: ExtensionState,
+  level: "info" | "warn" | "error",
+  message: string,
+): void {
   const ts = new Date().toISOString();
   state.output.appendLine(`[${ts}] [${level}] ${message}`);
+}
+
+/**
+ * Walk the translation's chunks, return any gaps in line coverage.
+ * Each gap is a [startLine, endLine] tuple (1-indexed, inclusive).
+ *
+ * Used after every translation to detect when the model skipped a
+ * function or block. The sequence-of-bools version (one bool per
+ * line) is fine here — files are bounded by the maxFileLines setting.
+ */
+function findCoverageGaps(
+  translation: Translation,
+  totalLines: number,
+): Array<[number, number]> {
+  if (totalLines <= 0) return [];
+  const covered = new Array<boolean>(totalLines + 1).fill(false);
+  for (const chunk of translation.chunks) {
+    const start = Math.max(1, chunk.startLine);
+    const end = Math.min(totalLines, chunk.endLine);
+    for (let i = start; i <= end; i++) {
+      covered[i] = true;
+    }
+  }
+  const gaps: Array<[number, number]> = [];
+  let gapStart = -1;
+  for (let i = 1; i <= totalLines; i++) {
+    if (!covered[i]) {
+      if (gapStart === -1) gapStart = i;
+    } else if (gapStart !== -1) {
+      gaps.push([gapStart, i - 1]);
+      gapStart = -1;
+    }
+  }
+  if (gapStart !== -1) gaps.push([gapStart, totalLines]);
+  return gaps;
 }
 
 function getMode(): Mode {
@@ -149,6 +188,18 @@ async function getOrFetchTranslation(
         "info",
         `Translated ${filename ?? "(unnamed)"} in ${elapsed}ms (${translation.chunks.length} chunks).`,
       );
+      // Coverage check — the prompt forbids skipping functions, but the model
+      // sometimes does anyway. Surface gaps to the log so users know to
+      // re-translate.
+      const gaps = findCoverageGaps(translation, document.lineCount);
+      if (gaps.length > 0) {
+        const fmt = gaps.map(([s, e]) => `L${s}-${e}`).join(", ");
+        log(
+          state,
+          "warn",
+          `Coverage gaps in ${filename ?? "(unnamed)"}: ${fmt}. The model skipped these line ranges. Consider running "Translate Current File" again or switching to claude-sonnet-4-6 in settings.`,
+        );
+      }
       // Push the fresh translation to the side panel if it's open and showing this doc.
       if (state.sidePanel.isOpen()) {
         state.sidePanel.update(translation, document);

@@ -32,6 +32,20 @@ Submit your translation via the \`submit_translation\` tool. Schema:
 
 Chunk by semantic units, not lines. One chunk per import block, per top-level statement, per function or class, per if/for/while/try block. Sequential imports become a single "Imports" chunk.
 
+# COVERAGE — CRITICAL: never skip a function, class, or top-level statement
+
+Your \`chunks\` array MUST cover **every** function, class, method, and top-level statement in the source file. Do not omit any.
+
+After producing your chunks, walk the source mentally from the first line to the last. Confirm that every \`def\`, every \`class\`, every module-level assignment, every top-level call, every backward-compat alias is included in some chunk. If you can find any function or class whose range doesn't fall inside any chunk you produced, your output is incomplete — add a chunk for it.
+
+DO NOT skip:
+- Methods, including one-liners (\`def __repr__(self): return ...\`)
+- Backward-compat aliases (\`Episode = Triple\`, \`def known_subjects(self): return self.known_entities()\`)
+- Property getters (\`@property\` decorated methods)
+- Methods that contain lazy imports — include them, mark them as medium confidence with a note about the import style
+- Module-level constants and type aliases
+- Helper functions defined at module level
+
 # LINES ARRAY — RULES
 
 This is the part the live tooltip uses for "what does THIS line do." It must be precise and granular.
