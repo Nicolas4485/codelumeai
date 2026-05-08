@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "lint": "eslint src",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "clean": "rimraf dist .turbo"
   },
   "dependencies": {
