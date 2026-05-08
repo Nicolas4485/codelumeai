@@ -138,6 +138,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/sql.js": "^1.4.9",
     "@types/vscode": "^1.95.0",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.24.0",
@@ -145,6 +146,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "@codelumeai/core": "workspace:*"
+    "@codelumeai/core": "workspace:*",
+    "sql.js": "^1.13.0"
   }
 }

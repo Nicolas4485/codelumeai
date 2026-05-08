@@ -19,6 +19,10 @@ const buildOptions = {
   sourcemap: !production,
   minify: production,
   logLevel: "info",
+  // sql.js needs its WASM file at runtime; we load it from node_modules
+  // at extension-host time. For .vsix packaging, the wasm gets copied
+  // alongside dist/ — see scripts/copy-wasm.mjs (added in step 5.4).
+  loader: { ".wasm": "file" },
 };
 
 if (watch) {
