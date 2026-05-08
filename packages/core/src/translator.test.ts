@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { translate, TranslationError } from "./translator";
 
+type StreamParams = {
+  model?: string;
+  max_tokens?: number;
+  messages: Array<{ role: string; content: string }>;
+  [key: string]: unknown;
+};
+
 const mockFinalMessage = vi.fn();
-const mockStream = vi.fn(() => ({ finalMessage: mockFinalMessage }));
+const mockStream = vi.fn<(p: StreamParams) => { finalMessage: typeof mockFinalMessage }>(
+  () => ({ finalMessage: mockFinalMessage }),
+);
 
 vi.mock("@anthropic-ai/sdk", () => {
   return {
@@ -144,8 +153,8 @@ describe("translate", () => {
       language: "python",
     });
 
-    const call = mockStream.mock.calls[0]?.[0];
-    expect(call.messages[0].content).toContain("   1: alpha");
-    expect(call.messages[0].content).toContain("   2: beta");
+    const content = mockStream.mock.calls[0]?.[0]?.messages[0]?.content;
+    expect(content).toContain("   1: alpha");
+    expect(content).toContain("   2: beta");
   });
 });
