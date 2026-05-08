@@ -34,13 +34,61 @@ Chunk by semantic units, not lines. One chunk per import block, per top-level st
 
 # LINES ARRAY — RULES
 
-This is the part the live tooltip uses for "what does THIS line do." It must be precise.
+This is the part the live tooltip uses for "what does THIS line do." It must be precise and granular.
 
 - Cover every **meaningful** source line in the chunk. Each line entry's range must fall inside the chunk's range.
-- A multi-line atomic statement (e.g. \`response = client.messages.create(\\n  model=...,\\n  ...,\\n)\`) is ONE entry with startLine/endLine spanning the whole statement.
+- **Inside a class body, EACH field declaration is its own line entry.** A class with 11 fields produces 11 line entries (plus one for the \`@dataclass\` decorator and one for \`class X:\` itself).
+- **Inside a function body, EACH statement is its own line entry** (assignment, conditional, loop, return, function call).
+- A multi-line statement spanning multiple physical lines as ONE syntactic unit (e.g. \`response = client.messages.create(\\n  model=...,\\n  ...,\\n)\` — one assignment, one function call) is ONE entry with startLine/endLine spanning the whole statement. **This rule applies only to a SINGLE statement that wraps onto multiple lines — NOT to multiple statements that happen to be in the same block.**
 - A blank line, a solo closing brace \`}\`, a solo \`)\`, or a comment-only line that adds no new info — **skip** it. Do not create a line entry just to translate boilerplate.
 - Comments that explain something the code doesn't reveal — translate normally.
 - Line entries must not overlap with each other.
+- **Minimum line entries per chunk**: a chunk with only one statement has one entry. A chunk with N distinct statements/declarations must have N entries. **If you have a chunk with multiple field declarations or statements and you produced only 1 line entry, you did it wrong.**
+
+# WORKED EXAMPLE — Correct \`lines\` for a Python dataclass
+
+Source:
+\`\`\`
+  53: @dataclass
+  54: class Triple:
+  55:     entity: str
+  56:     relation: str
+  57:     value: str
+  58:     domain: str = "general"
+  59:     tags: list[str] = field(default_factory=list)
+  60:     obs_type: str = "causal"
+  61:     confidence: float = 1.0
+  62:     timestamp: float = field(default_factory=time.time)
+  63:     source: str = "teach"
+\`\`\`
+
+CORRECT \`lines\` array — one entry per declaration:
+
+\`\`\`json
+[
+  { "startLine": 53, "endLine": 53, "english": "@dataclass — auto-generates the routine setup code for the class below." },
+  { "startLine": 54, "endLine": 54, "english": "Define a class named Triple." },
+  { "startLine": 55, "endLine": 55, "english": "Required field entity (a string)." },
+  { "startLine": 56, "endLine": 56, "english": "Required field relation (a string)." },
+  { "startLine": 57, "endLine": 57, "english": "Required field value (a string)." },
+  { "startLine": 58, "endLine": 58, "english": "Optional field domain, default 'general'." },
+  { "startLine": 59, "endLine": 59, "english": "Optional list of tags; each instance gets its own fresh empty list." },
+  { "startLine": 60, "endLine": 60, "english": "Optional observation type, default 'causal'." },
+  { "startLine": 61, "endLine": 61, "english": "Optional confidence number 0.0–1.0, default 1.0." },
+  { "startLine": 62, "endLine": 62, "english": "Optional timestamp, defaults to the current time." },
+  { "startLine": 63, "endLine": 63, "english": "Optional source label, default 'teach'." }
+]
+\`\`\`
+
+INCORRECT — do NOT do this:
+
+\`\`\`json
+[
+  { "startLine": 53, "endLine": 64, "english": "Define Triple dataclass with fields entity, relation, value, domain, tags, obs_type, confidence, timestamp, source." }
+]
+\`\`\`
+
+The incorrect version collapses 11 distinct declarations into one entry. That defeats the purpose of the \`lines\` array — the user can no longer hover line 55 and see something specific about \`entity\`.
 
 # STYLE RULES
 
