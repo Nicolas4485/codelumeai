@@ -93,8 +93,17 @@ export async function translate(opts: TranslateOptions): Promise<Translation> {
 
   const parsed = TranslationSchema.safeParse(toolUse.input);
   if (!parsed.success) {
+    // Surface the first 2 issues compactly; full details go via cause for logging.
+    const issues = parsed.error.issues
+      .slice(0, 2)
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    const more =
+      parsed.error.issues.length > 2
+        ? ` (+${String(parsed.error.issues.length - 2)} more)`
+        : "";
     throw new TranslationError(
-      `Model output failed schema validation: ${parsed.error.message}`,
+      `Model output failed schema validation — ${issues}${more}`,
       parsed.error,
     );
   }

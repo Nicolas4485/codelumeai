@@ -3,28 +3,39 @@ import { z } from "zod";
 export const ConfidenceSchema = z.enum(["high", "medium", "low"]);
 export type Confidence = z.infer<typeof ConfidenceSchema>;
 
-export const LineEntrySchema = z.object({
-  startLine: z.number().int().min(1),
-  endLine: z.number().int().min(1),
-  english: z.string().min(1),
-});
+// Schemas are intentionally permissive: LLMs frequently return null for optional
+// fields, occasionally add an extra field, and produce empty strings instead of
+// omitting. We strip surprises with .passthrough() and accept null/empty where
+// safe — the alternative is users seeing a hard error for a translation we
+// could have rendered fine.
+export const LineEntrySchema = z
+  .object({
+    startLine: z.number().int().min(1),
+    endLine: z.number().int().min(1),
+    english: z.string(),
+  })
+  .passthrough();
 export type LineEntry = z.infer<typeof LineEntrySchema>;
 
-export const ChunkSchema = z.object({
-  startLine: z.number().int().min(1),
-  endLine: z.number().int().min(1),
-  title: z.string().min(1),
-  summary: z.string().min(1),
-  lines: z.array(LineEntrySchema),
-  confidence: ConfidenceSchema,
-  note: z.string().optional(),
-});
+export const ChunkSchema = z
+  .object({
+    startLine: z.number().int().min(1),
+    endLine: z.number().int().min(1),
+    title: z.string(),
+    summary: z.string(),
+    lines: z.array(LineEntrySchema),
+    confidence: ConfidenceSchema,
+    note: z.string().nullable().optional().transform((v) => v ?? undefined),
+  })
+  .passthrough();
 export type Chunk = z.infer<typeof ChunkSchema>;
 
-export const TranslationSchema = z.object({
-  primer: z.string(),
-  chunks: z.array(ChunkSchema),
-});
+export const TranslationSchema = z
+  .object({
+    primer: z.string(),
+    chunks: z.array(ChunkSchema),
+  })
+  .passthrough();
 export type Translation = z.infer<typeof TranslationSchema>;
 
 export const TRANSLATION_TOOL_INPUT_SCHEMA = {
