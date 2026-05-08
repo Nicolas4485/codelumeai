@@ -21,7 +21,11 @@ export interface TranslateOptions {
 }
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
-const DEFAULT_MAX_TOKENS = 4096;
+// Faithful translations include a primer + chunks * (summary + per-line bullets).
+// A 250-line file with rich line breakdown easily produces 8–12K output tokens.
+// 16K gives plenty of headroom; we surface stop_reason: "max_tokens" with a
+// clear error if even this isn't enough.
+const DEFAULT_MAX_TOKENS = 16384;
 
 export class TranslationError extends Error {
   constructor(message: string, cause?: unknown) {
@@ -80,6 +84,13 @@ export async function translate(opts: TranslateOptions): Promise<Translation> {
     throw new TranslationError(
       `Anthropic API call failed: ${err instanceof Error ? err.message : String(err)}`,
       err,
+    );
+  }
+
+  if (response.stop_reason === "max_tokens") {
+    throw new TranslationError(
+      "Model hit the max_tokens limit before finishing the translation. " +
+        "Try a smaller file, or raise the maxTokens option in core.translate().",
     );
   }
 
