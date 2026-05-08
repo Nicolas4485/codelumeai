@@ -63,9 +63,13 @@ export async function translate(opts: TranslateOptions): Promise<Translation> {
     "```",
   ].join("\n");
 
+  // Use streaming (.stream + .finalMessage) instead of .create. With our 32K
+  // max_tokens budget, the API rejects non-streaming requests as the worst-case
+  // generation could exceed 10 minutes. Streaming bypasses that restriction;
+  // the response shape from finalMessage() is identical to .create's return.
   let response;
   try {
-    response = await client.messages.create({
+    const stream = client.messages.stream({
       model: opts.model ?? DEFAULT_MODEL,
       max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
       system,
@@ -80,6 +84,7 @@ export async function translate(opts: TranslateOptions): Promise<Translation> {
       tool_choice: { type: "tool", name: TOOL_NAME },
       messages: [{ role: "user", content: userMessage }],
     });
+    response = await stream.finalMessage();
   } catch (err) {
     throw new TranslationError(
       `Anthropic API call failed: ${err instanceof Error ? err.message : String(err)}`,

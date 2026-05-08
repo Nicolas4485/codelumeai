@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { translate, TranslationError } from "./translator";
 
-const mockCreate = vi.fn();
+const mockFinalMessage = vi.fn();
+const mockStream = vi.fn(() => ({ finalMessage: mockFinalMessage }));
 
 vi.mock("@anthropic-ai/sdk", () => {
   return {
     default: vi.fn().mockImplementation(() => ({
-      messages: { create: mockCreate },
+      messages: { stream: mockStream },
     })),
   };
 });
@@ -30,11 +31,12 @@ const validToolInput = {
 
 describe("translate", () => {
   beforeEach(() => {
-    mockCreate.mockReset();
+    mockFinalMessage.mockReset();
+    mockStream.mockClear();
   });
 
   it("returns the parsed translation on a clean tool_use response", async () => {
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: "tool_use", input: validToolInput }],
       stop_reason: "end_turn",
     });
@@ -50,7 +52,7 @@ describe("translate", () => {
   });
 
   it("throws TranslationError when stop_reason is max_tokens", async () => {
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: "text", text: "..." }],
       stop_reason: "max_tokens",
     });
@@ -65,7 +67,7 @@ describe("translate", () => {
   });
 
   it("throws TranslationError when no tool_use block is returned", async () => {
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: "text", text: "I refuse" }],
       stop_reason: "end_turn",
     });
@@ -80,7 +82,7 @@ describe("translate", () => {
   });
 
   it("throws TranslationError with a readable path on schema mismatch", async () => {
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [
         { type: "tool_use", input: { primer: "..." /* chunks missing */ } },
       ],
@@ -97,7 +99,7 @@ describe("translate", () => {
   });
 
   it("wraps SDK errors in TranslationError", async () => {
-    mockCreate.mockRejectedValue(new Error("network down"));
+    mockFinalMessage.mockRejectedValue(new Error("network down"));
 
     await expect(
       translate({
@@ -109,7 +111,7 @@ describe("translate", () => {
   });
 
   it("passes the chosen model and max_tokens through to the SDK", async () => {
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: "tool_use", input: validToolInput }],
       stop_reason: "end_turn",
     });
@@ -122,7 +124,7 @@ describe("translate", () => {
       maxTokens: 8192,
     });
 
-    expect(mockCreate).toHaveBeenCalledWith(
+    expect(mockStream).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "claude-sonnet-4-6",
         max_tokens: 8192,
@@ -131,7 +133,7 @@ describe("translate", () => {
   });
 
   it("prefixes source lines with 1-indexed line numbers", async () => {
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: "tool_use", input: validToolInput }],
       stop_reason: "end_turn",
     });
@@ -142,7 +144,7 @@ describe("translate", () => {
       language: "python",
     });
 
-    const call = mockCreate.mock.calls[0]?.[0];
+    const call = mockStream.mock.calls[0]?.[0];
     expect(call.messages[0].content).toContain("   1: alpha");
     expect(call.messages[0].content).toContain("   2: beta");
   });
