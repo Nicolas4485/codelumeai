@@ -50,7 +50,7 @@ jobs:
         run: pnpm exec vsce publish --no-dependencies --packagePath "codelumeai-${GITHUB_REF_NAME#v}.vsix"
 
       - name: Create GitHub release with .vsix attached
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: packages/vscode-extension/codelumeai-*.vsix
           generate_release_notes: true
