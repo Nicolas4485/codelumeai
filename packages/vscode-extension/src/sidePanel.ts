@@ -1,6 +1,8 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Translation } from "@codelumeai/core";
 import type { EditFlow } from "./editFlow";
+import type { ConnectedSymbols } from "./graph/types";
 
 interface WebviewMessage {
   type:
@@ -8,12 +10,16 @@ interface WebviewMessage {
     | "clearHighlight"
     | "revealLines"
     | "panelScrolled"
-    | "applyEdit";
+    | "applyEdit"
+    | "navigateTo"
+    | "reviewImpact";
   startLine?: number;
   endLine?: number;
   chunkIndex?: number;
   originalEnglish?: string;
   newEnglish?: string;
+  file?: string;
+  line?: number;
 }
 
 /**
@@ -24,11 +30,17 @@ interface WebviewMessage {
  * - Panel chunk hovered → matching line range in editor gets a soft highlight.
  * - Panel chunk clicked → editor jumps to that line.
  * - Editor file saved or switched → panel updates automatically (driven from extension.ts).
+ * - If the workspace has been indexed, each chunk shows a "Connected" section with
+ *   outgoing symbol references and incoming usage counts.
  */
 export class SidePanel {
+  /** Set by extension.ts — called when the user clicks "Review impact" in the panel. */
+  onReviewImpact: (() => void) | undefined;
+
   private panel: vscode.WebviewPanel | undefined;
   private currentDocument: vscode.TextDocument | undefined;
   private currentTranslation: Translation | undefined;
+  private currentGraphConnections: Array<ConnectedSymbols | null> | undefined;
   private readonly decorationType: vscode.TextEditorDecorationType;
   private readonly flashDecorationType: vscode.TextEditorDecorationType;
   private flashTimer: NodeJS.Timeout | undefined;
@@ -91,8 +103,6 @@ export class SidePanel {
     });
 
     this.panel.webview.onDidReceiveMessage((msg: WebviewMessage) => {
-      // Log every message arriving from the webview. Once we know whether
-      // 'revealLines' shows up here, we know whether the click reaches us.
       this.log(
         `recv ${msg.type} ` +
           `start=${String(msg.startLine)} end=${String(msg.endLine)} ` +
@@ -141,18 +151,31 @@ export class SidePanel {
             });
           }
           return;
+        case "navigateTo":
+          if (msg.file !== undefined && msg.line !== undefined) {
+            void this.navigateToSymbol(msg.file, msg.line);
+          }
+          return;
+        case "reviewImpact":
+          this.onReviewImpact?.();
+          return;
       }
     });
 
     // If a translation was already cached before the panel opened, send it now.
     if (this.currentTranslation) {
-      this.update(this.currentTranslation, this.currentDocument);
+      this.update(this.currentTranslation, this.currentDocument, this.currentGraphConnections);
     }
   }
 
   /** Render a translation. Updates the panel title to reflect the file. */
-  update(translation: Translation, document?: vscode.TextDocument): void {
+  update(
+    translation: Translation,
+    document?: vscode.TextDocument,
+    graphConnections?: Array<ConnectedSymbols | null>,
+  ): void {
     this.currentTranslation = translation;
+    this.currentGraphConnections = graphConnections;
     if (document) {
       this.currentDocument = document;
     }
@@ -161,7 +184,7 @@ export class SidePanel {
       if (filename) {
         this.panel.title = `${filename} · Plain English`;
       }
-      void this.panel.webview.postMessage({ type: "update", translation });
+      void this.panel.webview.postMessage({ type: "update", translation, graphConnections: graphConnections ?? null });
     }
   }
 
@@ -206,6 +229,22 @@ export class SidePanel {
     }
     this.suppressPanelSyncUntil = Date.now() + 300;
     void this.panel.webview.postMessage({ type: "scrollToChunk", chunkIndex });
+  }
+
+  /**
+   * Highlight connected files in the panel that may need updating after a recent
+   * code change. Pass an empty Set to clear all impact markers.
+   */
+  setImpactedFiles(files: Set<string>): void {
+    if (!this.panel) return;
+    void this.panel.webview.postMessage({ type: "setImpact", affectedFiles: [...files] });
+  }
+
+  /** Immediately clear the panel and show a translating spinner for the new file. */
+  showLoading(filename: string): void {
+    if (!this.panel) return;
+    this.panel.title = `${filename} · Plain English`;
+    void this.panel.webview.postMessage({ type: "loading", filename });
   }
 
   isOpen(): boolean {
@@ -301,13 +340,9 @@ export class SidePanel {
 
     // 1) Scroll the chunk's range to the centre of the editor viewport.
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-    // 2) Move the cursor to the start of the chunk (a small, non-disruptive
-    //    selection just at the first line — full-range selection turned out
-    //    to feel too invasive when the user is reading).
+    // 2) Move the cursor to the start of the chunk.
     editor.selection = new vscode.Selection(start, 0, start, 0);
-    // 3) Apply a high-contrast flash highlight across the whole range so the
-    //    user can clearly see WHERE the click landed, then auto-clear after
-    //    1.5 seconds so the editor isn't left visually noisy.
+    // 3) Flash highlight auto-clears after 1.5s.
     editor.setDecorations(this.flashDecorationType, [range]);
     if (this.flashTimer) {
       clearTimeout(this.flashTimer);
@@ -320,6 +355,18 @@ export class SidePanel {
     }, 1500);
 
     this.log(`  scrolled + flashed range`);
+  }
+
+  private async navigateToSymbol(workspaceRelFile: string, oneBased: number): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return;
+    const absPath = path.join(folder.uri.fsPath, workspaceRelFile.replace(/\//g, path.sep));
+    const uri = vscode.Uri.file(absPath);
+    const pos = new vscode.Position(Math.max(0, oneBased - 1), 0);
+    await vscode.window.showTextDocument(uri, {
+      selection: new vscode.Range(pos, pos),
+      preserveFocus: false,
+    });
   }
 
   private buildHtml(): string {
@@ -453,6 +500,53 @@ export class SidePanel {
       font-size: 0.9em;
     }
 
+    /* ---- Impact markers ---- */
+    .impact-banner {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 6px; padding: 5px 8px;
+      background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, #ff9d3d) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--vscode-inputValidation-warningBorder, #ff9d3d) 40%, transparent);
+      border-radius: 4px; font-size: 0.82em;
+    }
+    .impact-banner-text { flex: 1; color: var(--vscode-foreground); }
+    .impact-badge {
+      font-size: 0.72em; font-weight: 700; padding: 1px 5px; border-radius: 3px; flex-shrink: 0;
+      background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, #ff9d3d) 25%, transparent);
+      color: var(--vscode-inputValidation-warningForeground, #e8a735);
+      border: 1px solid color-mix(in srgb, var(--vscode-inputValidation-warningBorder, #ff9d3d) 50%, transparent);
+    }
+    .btn-impact {
+      padding: 2px 8px; font-size: 0.78em; border-radius: 3px; cursor: pointer; border: 1px solid transparent;
+      background: var(--vscode-button-secondaryBackground, rgba(128,128,128,0.15));
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      font-family: var(--vscode-font-family);
+    }
+    .btn-impact:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,0.25)); }
+
+    /* ---- Loading state ---- */
+    .loading-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 64px 16px;
+      gap: 16px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 2px solid var(--vscode-widget-border, rgba(128,128,128,0.3));
+      border-top-color: var(--vscode-progressBar-background, #0e70c0);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-label {
+      font-size: 0.9em;
+      font-style: italic;
+    }
+
     /* ---- Inline edit UI ---- */
     .edit-btn {
       display: inline-block;
@@ -530,6 +624,112 @@ export class SidePanel {
     .edit-btn-cancel:hover {
       background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
     }
+
+    /* ---- Connected section ---- */
+    .connected {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.18));
+    }
+    .connected-group {
+      margin-bottom: 8px;
+    }
+    .connected-label {
+      font-size: 0.72em;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 4px;
+    }
+    .connected-sym {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 2px 0;
+      font-size: 0.86em;
+      border-radius: 3px;
+    }
+    .connected-sym.outgoing {
+      cursor: pointer;
+    }
+    .connected-sym.outgoing:hover .sym-name {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: underline;
+    }
+    .connected-sym.incoming.expandable {
+      cursor: pointer;
+    }
+    .connected-sym.incoming.expandable:hover .sym-name {
+      color: var(--vscode-textLink-foreground);
+    }
+    .sym-toggle {
+      width: 10px;
+      font-size: 0.65em;
+      color: var(--vscode-descriptionForeground);
+      flex-shrink: 0;
+      transition: transform 0.15s ease;
+      display: inline-block;
+      line-height: 1;
+      user-select: none;
+    }
+    .sym-kind {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.78em;
+      font-family: var(--vscode-editor-font-family, monospace);
+      min-width: 36px;
+      flex-shrink: 0;
+    }
+    .sym-name {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.93em;
+      background: var(--vscode-textCodeBlock-background);
+      padding: 0 3px;
+      border-radius: 2px;
+    }
+    .sym-loc {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.8em;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .sym-refcount {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.8em;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .ref-list {
+      display: none;
+      margin: 2px 0 4px 22px;
+      border-left: 2px solid var(--vscode-widget-border, rgba(128,128,128,0.18));
+      padding-left: 8px;
+    }
+    .ref-item {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 2px 4px;
+      font-size: 0.82em;
+      cursor: pointer;
+      border-radius: 2px;
+    }
+    .ref-item:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+    .ref-item:hover .ref-loc {
+      text-decoration: underline;
+    }
+    .ref-loc {
+      font-family: var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-textLink-foreground);
+      flex-shrink: 0;
+    }
+    .ref-context {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
@@ -547,10 +747,108 @@ export class SidePanel {
     }
 
     function fmtRange(start, end) {
-      return start === end ? 'L' + start : 'L' + start + '–' + end;
+      return start === end ? 'L' + start : 'L' + start + '\\u2013' + end;
     }
 
-    function render(translation) {
+    function kindLabel(kind) {
+      const map = {
+        'function': 'fn',
+        'method': 'fn',
+        'constructor': 'new',
+        'class': 'class',
+        'interface': 'iface',
+        'struct': 'struct',
+        'enum': 'enum',
+        'enumMember': 'enum',
+        'variable': 'var',
+        'constant': 'const',
+        'property': 'prop',
+        'field': 'field',
+        'namespace': 'ns',
+        'module': 'mod',
+        'typeParameter': 'type',
+      };
+      return map[kind] || kind.slice(0, 5);
+    }
+
+    function renderConnected(conn) {
+      // conn === undefined: graph not indexed yet — show nothing (clean, no noise)
+      // conn === null: query failed — show nothing
+      if (!conn) return '';
+      const { outgoing, incoming } = conn;
+      if (!outgoing.length && !incoming.length) return '';
+
+      // Collect all files reachable from this chunk and intersect with impacted set
+      const connectedFileSet = new Set([
+        ...outgoing.map(s => s.file),
+        ...incoming.flatMap(i => (i.refs || []).map(r => r.file)),
+      ]);
+      const impactedConnected = [...connectedFileSet].filter(f => impactedFiles.has(f));
+
+      let html = '<div class="connected">';
+
+      // Impact banner — shown when the user just applied an edit that touches connected files
+      if (impactedConnected.length > 0) {
+        const n = impactedConnected.length;
+        html += '<div class="impact-banner">' +
+          '<span class="impact-badge">⚠ Needs review</span>' +
+          '<span class="impact-banner-text">' + n + ' connected file' + (n !== 1 ? 's' : '') + ' may need updating</span>' +
+          '<button class="btn-impact" id="btn-review-impact">Review impact</button>' +
+        '</div>';
+      }
+
+      if (outgoing.length) {
+        html += '<div class="connected-group"><div class="connected-label">Uses</div>';
+        for (const sym of outgoing) {
+          const filename = sym.file.split('/').pop() || sym.file;
+          const isImpacted = impactedFiles.has(sym.file);
+          html += '<div class="connected-sym outgoing" data-file="' + escapeHtml(sym.file) + '" data-line="' + sym.startLine + '">' +
+            '<span class="sym-kind">' + escapeHtml(kindLabel(sym.kind)) + '</span>' +
+            '<span class="sym-name">' + escapeHtml(sym.name) + '</span>' +
+            (isImpacted ? '<span class="impact-badge" style="margin-left:4px">⚠</span>' : '') +
+            '<span class="sym-loc">' + escapeHtml(filename) + ':' + sym.startLine + '</span>' +
+          '</div>';
+        }
+        html += '</div>';
+      }
+      if (incoming.length) {
+        html += '<div class="connected-group"><div class="connected-label">Used by</div>';
+        for (const item of incoming) {
+          const sym = item.symbol;
+          const hasRefs = item.refs && item.refs.length > 0;
+          const symId = escapeHtml(sym.id);
+          const symImpacted = hasRefs && item.refs.some(r => impactedFiles.has(r.file));
+          html += '<div class="connected-sym incoming' + (hasRefs ? ' expandable' : '') + '" data-sym-id="' + symId + '">' +
+            '<span class="sym-toggle">' + (hasRefs ? '\\u25b6' : '') + '</span>' +
+            '<span class="sym-kind">' + escapeHtml(kindLabel(sym.kind)) + '</span>' +
+            '<span class="sym-name">' + escapeHtml(sym.name) + '</span>' +
+            (symImpacted ? '<span class="impact-badge" style="margin-left:4px">⚠</span>' : '') +
+            '<span class="sym-refcount">\\u00d7' + item.refCount + '</span>' +
+          '</div>';
+          if (hasRefs) {
+            html += '<div class="ref-list" data-for="' + symId + '">';
+            for (const ref of item.refs) {
+              const refFilename = ref.file.split('/').pop() || ref.file;
+              const refImpacted = impactedFiles.has(ref.file);
+              const context = ref.inSymbol
+                ? ' <span class="ref-context">in ' + escapeHtml(ref.inSymbol.name) + '</span>'
+                : '';
+              html += '<div class="ref-item" data-file="' + escapeHtml(ref.file) + '" data-line="' + ref.line + '">' +
+                '<span class="ref-loc">' + escapeHtml(refFilename) + ':' + ref.line + '</span>' +
+                context +
+                (refImpacted ? '<span class="impact-badge" style="margin-left:auto">⚠</span>' : '') +
+              '</div>';
+            }
+            html += '</div>';
+          }
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+      return html;
+    }
+
+    function render(translation, graphConnections) {
       if (!translation || !translation.chunks || translation.chunks.length === 0) {
         root.innerHTML = '<div class="empty-state">No translation available yet. Hover any line in the editor to start.</div>';
         return;
@@ -564,14 +862,15 @@ export class SidePanel {
       }
       for (let i = 0; i < translation.chunks.length; i++) {
         const c = translation.chunks[i];
+        const conn = graphConnections ? graphConnections[i] : undefined;
         const linesHtml = (c.lines || []).map(l => {
           return '<li class="line-entry" data-start="' + l.startLine + '" data-end="' + l.endLine + '">' +
             '<span class="line-range">' + fmtRange(l.startLine, l.endLine) + '</span>' +
             '<span class="line-text">' + escapeHtml(l.english) + '</span>' +
-            '<button class="edit-btn" title="Edit and apply to code">✎</button>' +
+            '<button class="edit-btn" title="Edit and apply to code">\\u270e</button>' +
           '</li>';
         }).join('');
-        const noteHtml = c.note ? '<div class="note">⚠ ' + escapeHtml(c.note) + '</div>' : '';
+        const noteHtml = c.note ? '<div class="note">\\u26a0 ' + escapeHtml(c.note) + '</div>' : '';
         const conf = c.confidence || 'high';
         html += '<div class="chunk" data-chunk="' + i + '" data-start="' + c.startLine + '" data-end="' + c.endLine + '">' +
           '<div class="chunk-header">' +
@@ -582,6 +881,7 @@ export class SidePanel {
           '<div class="chunk-summary">' + escapeHtml(c.summary || '') + '</div>' +
           '<ul class="chunk-lines">' + linesHtml + '</ul>' +
           noteHtml +
+          renderConnected(conn) +
         '</div>';
       }
       root.innerHTML = html;
@@ -615,15 +915,11 @@ export class SidePanel {
         el.addEventListener('click', e => {
           e.stopPropagation();
           if (el.querySelector('.edit-mode')) return;
-          // Don't trigger reveal-on-click if the user clicked the pencil button
-          // (or anywhere inside it).
           if (e.target && e.target.closest && e.target.closest('.edit-btn')) return;
           const start = parseInt(el.dataset.start, 10);
           const end = parseInt(el.dataset.end, 10);
           vscode.postMessage({ type: 'revealLines', startLine: start, endLine: end });
         });
-        // Double-click anywhere on a bullet → enter edit mode (backup for the
-        // pencil button, which is small and easy to miss).
         el.addEventListener('dblclick', e => {
           e.stopPropagation();
           e.preventDefault();
@@ -636,7 +932,6 @@ export class SidePanel {
         });
       });
 
-      // Pencil button → enter edit mode for that line bullet.
       document.querySelectorAll('.edit-btn').forEach(btn => {
         btn.addEventListener('click', e => {
           e.stopPropagation();
@@ -650,12 +945,58 @@ export class SidePanel {
           enterEditMode(lineEntry, start, end, original);
         });
       });
+
+      // Outgoing symbol → navigate to its definition in the editor.
+      document.querySelectorAll('.connected-sym.outgoing').forEach(el => {
+        el.addEventListener('click', e => {
+          e.stopPropagation();
+          const file = el.dataset.file;
+          const line = parseInt(el.dataset.line, 10);
+          if (file && line) {
+            vscode.postMessage({ type: 'navigateTo', file, line });
+          }
+        });
+      });
+
+      // Incoming symbol → toggle the ref-location dropdown.
+      document.querySelectorAll('.connected-sym.incoming.expandable').forEach(el => {
+        el.addEventListener('click', e => {
+          e.stopPropagation();
+          const symId = el.dataset.symId;
+          const refList = document.querySelector('.ref-list[data-for="' + symId + '"]');
+          const toggle = el.querySelector('.sym-toggle');
+          if (!refList) return;
+          const isOpen = refList.style.display === 'block';
+          refList.style.display = isOpen ? 'none' : 'block';
+          if (toggle) toggle.style.transform = isOpen ? '' : 'rotate(90deg)';
+        });
+      });
+
+      // Ref item → navigate to that specific usage location.
+      document.querySelectorAll('.ref-item').forEach(el => {
+        el.addEventListener('click', e => {
+          e.stopPropagation();
+          const file = el.dataset.file;
+          const line = parseInt(el.dataset.line, 10);
+          if (file && line) {
+            vscode.postMessage({ type: 'navigateTo', file, line });
+          }
+        });
+      });
+
+      // "Review impact" button → open VS Code Quick Pick with affected files.
+      const reviewBtn = document.getElementById('btn-review-impact');
+      if (reviewBtn) {
+        reviewBtn.addEventListener('click', e => {
+          e.stopPropagation();
+          vscode.postMessage({ type: 'reviewImpact' });
+        });
+      }
     }
 
     let activeEditCleanup = null;
 
     function enterEditMode(lineEntry, startLine, endLine, originalText) {
-      // Cancel any other in-progress edit so we never have two textareas at once.
       if (activeEditCleanup) activeEditCleanup();
 
       const textSpan = lineEntry.querySelector('.line-text');
@@ -740,10 +1081,6 @@ export class SidePanel {
     }
 
     // ---- Scroll sync ----
-    // We programmatically scroll on 'scrollToChunk' messages from the
-    // extension. That programmatic scroll fires our scroll listener; we
-    // need to suppress the resulting 'panelScrolled' message to avoid a
-    // sync loop. \`scrollSyncing\` is the suppression flag.
     let scrollSyncing = false;
     let scrollDebounce = null;
 
@@ -752,7 +1089,6 @@ export class SidePanel {
       if (!el) return;
       scrollSyncing = true;
       el.scrollIntoView({ behavior: 'auto', block: 'start' });
-      // Allow some frames for the scroll to settle, then re-arm.
       setTimeout(() => { scrollSyncing = false; }, 250);
     }
 
@@ -760,7 +1096,6 @@ export class SidePanel {
       const chunks = document.querySelectorAll('.chunk');
       for (let i = 0; i < chunks.length; i++) {
         const rect = chunks[i].getBoundingClientRect();
-        // Pick the first chunk whose bottom is below the top of the viewport.
         if (rect.bottom > 0) return i;
       }
       return -1;
@@ -777,11 +1112,31 @@ export class SidePanel {
       }, 80);
     }, { passive: true });
 
+    // ---- Impact state (cross-file review) ----
+    let currentTranslation = null;
+    let currentGraphConnections = null;
+    let impactedFiles = new Set();
+
     window.addEventListener('message', event => {
       const msg = event.data;
       if (!msg) return;
       if (msg.type === 'update') {
-        render(msg.translation);
+        currentTranslation = msg.translation;
+        currentGraphConnections = msg.graphConnections || null;
+        impactedFiles = new Set(); // clear impact markers on every file switch
+        render(currentTranslation, currentGraphConnections);
+      } else if (msg.type === 'setImpact') {
+        impactedFiles = new Set(msg.affectedFiles || []);
+        if (currentTranslation) render(currentTranslation, currentGraphConnections);
+      } else if (msg.type === 'loading') {
+        currentTranslation = null;
+        currentGraphConnections = null;
+        impactedFiles = new Set();
+        root.innerHTML =
+          '<div class="loading-state">' +
+            '<div class="spinner"></div>' +
+            '<div class="loading-label">Translating ' + escapeHtml(msg.filename) + '…</div>' +
+          '</div>';
       } else if (msg.type === 'highlightChunk') {
         highlightChunk(msg.chunkIndex);
       } else if (msg.type === 'scrollToChunk') {

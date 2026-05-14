@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
 import {
   translate,
@@ -10,9 +11,20 @@ import {
 } from "@codelumeai/core";
 import { SidePanel } from "./sidePanel";
 import { EditFlow } from "./editFlow";
+import { GraphStore } from "./graph/store";
+import { indexFile } from "./graph/indexer";
+import { GraphPanel } from "./graph/graphPanel";
+import { OnboardingPanel } from "./onboarding/panel";
+import type { ConnectedSymbols } from "./graph/types";
+import {
+  generateBriefing,
+  chatWithCodebase,
+  type Briefing,
+  type ChatMessage,
+} from "@codelumeai/core";
 
 const SECRET_KEY = "codelumeai.apiKey";
-const CACHE_SCHEMA_VERSION = "v2";
+const CACHE_SCHEMA_VERSION = "v4";
 
 const SUPPORTED_LANGUAGES = [
   "python",
@@ -33,6 +45,12 @@ const SUPPORTED_LANGUAGES = [
 
 type Mode = "off" | "hover" | "always-on";
 
+/** Files that may need updating after the most recent EditFlow apply. */
+interface RecentImpact {
+  /** Workspace-relative paths of connected files that might be affected. */
+  affectedFiles: Set<string>;
+}
+
 interface ExtensionState {
   context: vscode.ExtensionContext;
   cache: MemoryCache<Translation>;
@@ -41,6 +59,14 @@ interface ExtensionState {
   inFlight: Map<string, Promise<Translation | undefined>>;
   output: vscode.OutputChannel;
   sidePanel: SidePanel;
+  onboardingPanel: OnboardingPanel | undefined;
+  graphPanel: GraphPanel | undefined;
+  graphStore: GraphStore | undefined;
+  /** In-flight or completed init promise — prevents double-open. */
+  graphStoreInitPromise: Promise<void> | undefined;
+  workspaceFolderUri: vscode.Uri | undefined;
+  /** Set after an edit is applied; cleared when the active editor changes. */
+  recentImpact: RecentImpact | undefined;
 }
 
 function log(
@@ -98,6 +124,90 @@ function findCoverageGaps(
     }
     return false;
   });
+}
+
+function workspaceRelative(workspaceFolder: vscode.Uri, file: vscode.Uri): string {
+  const ws = workspaceFolder.fsPath.replace(/\\/g, "/");
+  const f = file.fsPath.replace(/\\/g, "/");
+  if (f.startsWith(ws + "/")) return f.slice(ws.length + 1);
+  return f;
+}
+
+/**
+ * Lazy-open the graph store. Safe to call multiple times — only opens once.
+ * Does NOT run during activate(); called on first user action that needs it
+ * (openSidePanel or indexWorkspace). This keeps sql.js's Emscripten bootstrap
+ * code out of the extension-host startup path.
+ */
+function ensureGraphStore(state: ExtensionState): Promise<void> {
+  if (state.graphStore) return Promise.resolve();
+  if (!state.workspaceFolderUri) return Promise.resolve();
+  if (!state.graphStoreInitPromise) {
+    state.graphStoreInitPromise = (async () => {
+      try {
+        const dbPath = GraphStore.dbPathForWorkspace(
+          state.context.globalStorageUri,
+          (state.workspaceFolderUri as vscode.Uri).fsPath,
+        );
+        state.graphStore = await GraphStore.open({
+          extensionPath: state.context.extensionPath,
+          dbPath,
+        });
+        const s = state.graphStore.stats();
+        log(state, "info", `Graph store ready. ${s.files} files, ${s.symbols} symbols, ${s.refs} refs.`);
+      } catch (err) {
+        state.graphStoreInitPromise = undefined; // allow retry
+        log(state, "warn", `Graph store init failed (connections unavailable): ${String(err)}`);
+      }
+    })();
+  }
+  return state.graphStoreInitPromise;
+}
+
+function maybeGetGraphConnections(
+  state: ExtensionState,
+  translation: Translation,
+  document: vscode.TextDocument,
+): Array<ConnectedSymbols | null> | undefined {
+  if (!state.graphStore || !state.workspaceFolderUri) return undefined;
+  try {
+    if (state.graphStore.stats().files === 0) return undefined;
+    const rel = workspaceRelative(state.workspaceFolderUri, document.uri);
+    return translation.chunks.map((chunk) => {
+      try {
+        return (state.graphStore as GraphStore).getChunkConnections({
+          file: rel,
+          startLine: chunk.startLine,
+          endLine: chunk.endLine,
+        });
+      } catch {
+        return null;
+      }
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function sidePanelUpdate(
+  state: ExtensionState,
+  translation: Translation,
+  document: vscode.TextDocument,
+): void {
+  const connections = maybeGetGraphConnections(state, translation, document);
+  state.sidePanel.update(translation, document, connections);
+}
+
+function refreshSidePanelIfNeeded(state: ExtensionState): void {
+  if (!state.sidePanel.isOpen() || !state.workspaceFolderUri) return;
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !SUPPORTED_LANGUAGES.includes(editor.document.languageId)) return;
+  const config = vscode.workspace.getConfiguration("codelumeai");
+  const model = config.get<string>("model", "claude-haiku-4-5");
+  const cacheKey = hashContent(editor.document.getText(), editor.document.languageId, model, CACHE_SCHEMA_VERSION);
+  const cached = state.cache.get(cacheKey);
+  if (!cached) return;
+  sidePanelUpdate(state, cached.value, editor.document);
 }
 
 function getMode(): Mode {
@@ -216,7 +326,7 @@ async function getOrFetchTranslation(
       }
       // Push the fresh translation to the side panel if it's open and showing this doc.
       if (state.sidePanel.isOpen()) {
-        state.sidePanel.update(translation, document);
+        sidePanelUpdate(state, translation, document);
       }
       return translation;
     } catch (err) {
@@ -420,9 +530,99 @@ async function ensureApiKeyOrPrompt(
   return state.context.secrets.get(SECRET_KEY);
 }
 
+/** Build the context payload the briefing + chat calls need from the current graph state. */
+function buildCodebaseContext(state: ExtensionState): {
+  topSymbols: Parameters<typeof generateBriefing>[0]["topSymbols"];
+  fileStructure: Parameters<typeof generateBriefing>[0]["fileStructure"];
+  translationSummaries: Parameters<typeof generateBriefing>[0]["translationSummaries"];
+} {
+  const store = state.graphStore;
+  if (!store) return { topSymbols: [], fileStructure: { foundations: [], features: [], entryPoints: [] }, translationSummaries: [] };
+
+  const topSymbols = store.getTopSymbols(12);
+  const fileStats = store.getFileStats().filter((f) => f.symbolCount > 0);
+  const maxIn = Math.max(...fileStats.map((f) => f.incomingRefs), 1);
+  const foundations = fileStats.filter((f) => f.incomingRefs >= Math.max(2, Math.ceil(maxIn * 0.4))).map((f) => f.path);
+  const entryPoints = fileStats.filter((f) => f.incomingRefs === 0 && f.outgoingDeps > 0).map((f) => f.path);
+  const features = fileStats.filter((f) => !foundations.includes(f.path) && !entryPoints.includes(f.path)).map((f) => f.path);
+
+  // Pull any cached translations we already have for the foundation files
+  const config = vscode.workspace.getConfiguration("codelumeai");
+  const model = config.get<string>("model", "claude-haiku-4-5");
+  const translationSummaries: Array<{ file: string; summary: string }> = [];
+  for (const filePath of [...foundations, ...features].slice(0, 8)) {
+    // The cache key needs the actual source text — we can only pull from in-memory cache
+    // by scanning for any key that contains this file's path fragment. We iterate the
+    // in-memory entries the cache exposes. For now we skip files not yet in the cache.
+    const _ = filePath; // placeholder: actual lookup done below via state.cache iteration
+    void model; // used implicitly above
+  }
+  // Simpler: scan the cache directly for translations of foundation files
+  // (MemoryCache doesn't expose iteration, so we skip for now — the briefing
+  // prompt handles "no translations available yet" gracefully)
+
+  return {
+    topSymbols,
+    fileStructure: { foundations, features, entryPoints },
+    translationSummaries,
+  };
+}
+
+function makeOnboardingPanel(state: ExtensionState): OnboardingPanel {
+  const BRIEFING_CACHE_KEY = `codelumeai.briefing.${
+    state.workspaceFolderUri
+      ? GraphStore.workspaceHash(state.workspaceFolderUri.fsPath)
+      : "unknown"
+  }`;
+
+  const panel = new OnboardingPanel(state.output, state.workspaceFolderUri as vscode.Uri, {
+    generateBriefing: async (): Promise<Briefing> => {
+      const apiKey = await state.context.secrets.get(SECRET_KEY);
+      if (!apiKey) throw new Error("API key not set. Run CodeLumeAI: Set Anthropic API Key first.");
+      const config = vscode.workspace.getConfiguration("codelumeai");
+      const model = config.get<string>("model", "claude-haiku-4-5");
+      const workspaceName = state.workspaceFolderUri
+        ? state.workspaceFolderUri.fsPath.split(/[\\/]/).pop() ?? "workspace"
+        : "workspace";
+      const ctx = buildCodebaseContext(state);
+      const briefing = await generateBriefing({ apiKey, model, workspaceName, ...ctx });
+      // Persist so it survives session restarts
+      await state.context.globalState.update(BRIEFING_CACHE_KEY, briefing);
+      return briefing;
+    },
+
+    chat: async (message: string, history: ChatMessage[]): Promise<string> => {
+      const apiKey = await state.context.secrets.get(SECRET_KEY);
+      if (!apiKey) throw new Error("API key not set. Run CodeLumeAI: Set Anthropic API Key first.");
+      const config = vscode.workspace.getConfiguration("codelumeai");
+      const model = config.get<string>("model", "claude-haiku-4-5");
+      const workspaceName = state.workspaceFolderUri
+        ? state.workspaceFolderUri.fsPath.split(/[\\/]/).pop() ?? "workspace"
+        : "workspace";
+      const cachedBriefing = state.context.globalState.get<Briefing>(BRIEFING_CACHE_KEY);
+      const ctx = buildCodebaseContext(state);
+      return chatWithCodebase({
+        apiKey, model, workspaceName,
+        briefing: cachedBriefing,
+        messages: history,
+        ...ctx,
+      });
+    },
+  });
+
+  // Restore cached briefing from previous session immediately
+  const cachedBriefing = state.context.globalState.get<Briefing>(BRIEFING_CACHE_KEY);
+  if (cachedBriefing) {
+    panel.setCachedBriefing(cachedBriefing);
+  }
+
+  return panel;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("CodeLumeAI");
   const editFlow = new EditFlow(context, context.secrets, output);
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   const state: ExtensionState = {
     context,
     cache: new MemoryCache<Translation>(),
@@ -434,23 +634,194 @@ export function activate(context: vscode.ExtensionContext): void {
     inFlight: new Map(),
     output,
     sidePanel: new SidePanel(output, editFlow),
+    onboardingPanel: undefined,
+    graphPanel: undefined,
+    graphStore: undefined,
+    graphStoreInitPromise: undefined,
+    workspaceFolderUri: workspaceFolder?.uri,
+    recentImpact: undefined,
   };
 
   log(state, "info", "Extension activated.");
+
+  // ── Cross-file impact detection ────────────────────────────────────────────
+  // After an edit is applied via EditFlow, query the graph for all files that
+  // reference the changed chunk's symbols and surface them in the side panel.
+  editFlow.onApplied = (info) => {
+    if (!state.graphStore || !state.workspaceFolderUri) return;
+    try {
+      const rel = workspaceRelative(state.workspaceFolderUri, info.document.uri);
+      const conn = state.graphStore.getChunkConnections({
+        file: rel,
+        startLine: info.startLine,
+        endLine: info.endLine,
+      });
+      const affected = new Set<string>();
+      for (const sym of conn.outgoing) {
+        if (sym.file !== rel) affected.add(sym.file);
+      }
+      for (const item of conn.incoming) {
+        for (const ref of item.refs) {
+          if (ref.file !== rel) affected.add(ref.file);
+        }
+      }
+      state.recentImpact = affected.size > 0 ? { affectedFiles: affected } : undefined;
+      state.sidePanel.setImpactedFiles(affected);
+      log(state, "info", `Impact: edit in ${rel} affects ${affected.size} file(s): ${[...affected].join(", ")}`);
+    } catch (err) {
+      log(state, "warn", `Impact lookup failed: ${String(err)}`);
+    }
+  };
+
+  // When the user clicks "Review impact" in the side panel, show a Quick Pick
+  // listing all affected files so they can navigate to each one.
+  state.sidePanel.onReviewImpact = () => {
+    const files = state.recentImpact?.affectedFiles;
+    if (!files || files.size === 0) return;
+    const items = [...files].map((f) => ({
+      label: f.split("/").pop() ?? f,
+      description: f,
+      file: f,
+    }));
+    void vscode.window.showQuickPick(items, {
+      placeHolder: "Select a file to navigate to",
+      matchOnDescription: true,
+    }).then((item) => {
+      if (!item || !state.workspaceFolderUri) return;
+      const absPath = path.join(
+        state.workspaceFolderUri.fsPath,
+        item.file.replace(/\//g, path.sep),
+      );
+      void vscode.window.showTextDocument(vscode.Uri.file(absPath), {
+        preserveFocus: false,
+        viewColumn: vscode.ViewColumn.One,
+      });
+    });
+  };
 
   context.subscriptions.push(
     state.inlayHintsEmitter,
     state.statusBar,
     state.output,
     { dispose: () => state.sidePanel.dispose() },
+    { dispose: () => state.onboardingPanel?.dispose() },
+    { dispose: () => state.graphPanel?.dispose() },
+    { dispose: () => state.graphStore?.close() },
 
     vscode.commands.registerCommand("codelumeai.showLogs", () => {
       state.output.show();
     }),
 
+    vscode.commands.registerCommand("codelumeai.indexWorkspace", async () => {
+      if (!state.workspaceFolderUri) {
+        void vscode.window.showErrorMessage("CodeLumeAI: No workspace folder open.");
+        return;
+      }
+      await ensureGraphStore(state);
+      if (!state.graphStore) {
+        void vscode.window.showErrorMessage("CodeLumeAI: Graph store could not be opened — check the CodeLumeAI logs.");
+        return;
+      }
+      const uris = await vscode.workspace.findFiles(
+        "**/*.{ts,tsx,js,jsx,py,go,rs,java,cs,rb,php,html,css,scss}",
+        "{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/__pycache__/**,.turbo/**}",
+      );
+      if (uris.length === 0) {
+        void vscode.window.showInformationMessage("CodeLumeAI: No supported files found in workspace.");
+        return;
+      }
+      const cancel = new vscode.CancellationTokenSource();
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "CodeLumeAI: Indexing workspace…", cancellable: true },
+        async (progress, token) => {
+          token.onCancellationRequested(() => { cancel.cancel(); });
+          let indexed = 0;
+          let skipped = 0;
+          const SAVE_EVERY = 25;
+          for (const uri of uris) {
+            if (cancel.token.isCancellationRequested) break;
+            try {
+              const result = await indexFile({
+                store: state.graphStore as GraphStore,
+                uri,
+                workspaceFolder: state.workspaceFolderUri as vscode.Uri,
+                cancellation: cancel.token,
+              });
+              if (result.empty) {
+                skipped++;
+              } else {
+                indexed++;
+                log(state, "info", `Graph: ${result.file} — ${result.symbolCount} sym, ${result.refCount} refs, ${result.durationMs}ms`);
+              }
+            } catch (err) {
+              log(state, "warn", `Graph: failed ${uri.fsPath}: ${String(err)}`);
+              skipped++;
+            }
+            if ((indexed + skipped) % SAVE_EVERY === 0) {
+              (state.graphStore as GraphStore).save();
+            }
+            progress.report({ increment: 100 / uris.length, message: `${indexed + skipped}/${uris.length}` });
+          }
+          (state.graphStore as GraphStore).save();
+          cancel.dispose();
+          const s = (state.graphStore as GraphStore).stats();
+          log(state, "info", `Graph: done. ${s.files} files, ${s.symbols} symbols, ${s.refs} refs.`);
+          void vscode.window.showInformationMessage(
+            `CodeLumeAI: Indexed ${indexed} files (${skipped} skipped). ${s.symbols} symbols, ${s.refs} cross-file references.`,
+          );
+          refreshSidePanelIfNeeded(state);
+        },
+      );
+    }),
+
+    vscode.commands.registerCommand("codelumeai.newDevGuide", async () => {
+      if (!state.workspaceFolderUri) {
+        void vscode.window.showErrorMessage("CodeLumeAI: No workspace folder open.");
+        return;
+      }
+      await ensureGraphStore(state);
+      if (!state.graphStore) {
+        void vscode.window.showWarningMessage(
+          "CodeLumeAI: Index the workspace first (CodeLumeAI: Index Workspace for Connections) to get the full guide.",
+        );
+        return;
+      }
+      if (!state.onboardingPanel) {
+        state.onboardingPanel = makeOnboardingPanel(state);
+      }
+      state.onboardingPanel.show(state.graphStore);
+    }),
+
+    vscode.commands.registerCommand("codelumeai.showGraph", async () => {
+      if (!state.workspaceFolderUri) {
+        void vscode.window.showErrorMessage("CodeLumeAI: No workspace folder open.");
+        return;
+      }
+      await ensureGraphStore(state);
+      if (!state.graphStore) {
+        void vscode.window.showWarningMessage(
+          "CodeLumeAI: Index the workspace first (CodeLumeAI: Index Workspace for Connections) to see the dependency graph.",
+        );
+        return;
+      }
+      if (!state.graphPanel) {
+        state.graphPanel = new GraphPanel(state.output, state.workspaceFolderUri);
+      }
+      state.graphPanel.show(state.graphStore);
+      // Highlight whichever file is currently active
+      const editor = vscode.window.activeTextEditor;
+      if (editor && state.workspaceFolderUri) {
+        const rel = workspaceRelative(state.workspaceFolderUri, editor.document.uri);
+        state.graphPanel.highlightFile(rel);
+      }
+    }),
+
     vscode.commands.registerCommand(
       "codelumeai.openSidePanel",
       async () => {
+        // Start graph store init in the background so it's ready by the time
+        // the translation completes (translations take several seconds).
+        void ensureGraphStore(state);
         state.sidePanel.show();
         const editor = vscode.window.activeTextEditor;
         if (editor && SUPPORTED_LANGUAGES.includes(editor.document.languageId)) {
@@ -460,7 +831,7 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           const translation = await getOrFetchTranslation(state, editor.document);
           if (translation) {
-            state.sidePanel.update(translation, editor.document);
+            sidePanelUpdate(state, translation, editor.document);
           }
         }
       },
@@ -574,13 +945,24 @@ export function activate(context: vscode.ExtensionContext): void {
       ) {
         void getOrFetchTranslation(state, doc).then((t) => {
           if (t) {
-            state.sidePanel.update(t, doc);
+            sidePanelUpdate(state, t, doc);
           }
         });
       }
     }),
 
     vscode.window.onDidChangeActiveTextEditor((editor) => {
+      // Sync graph highlight to the newly active file.
+      if (editor && state.graphPanel && state.workspaceFolderUri) {
+        const rel = workspaceRelative(state.workspaceFolderUri, editor.document.uri);
+        state.graphPanel.highlightFile(rel);
+      }
+
+      // Clear impact markers when the user switches file — the markers only
+      // apply to the file they were viewing when the edit was applied.
+      state.recentImpact = undefined;
+      state.sidePanel.setImpactedFiles(new Set());
+
       // When the active editor changes and the panel is open, refresh it
       // for the new file. Skips unsupported languages.
       if (!state.sidePanel.isOpen()) {
@@ -589,9 +971,13 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!editor || !SUPPORTED_LANGUAGES.includes(editor.document.languageId)) {
         return;
       }
+      // Show a spinner immediately — the translation fetch can take 5–15 s on a
+      // cache miss and we don't want the stale previous file's content to linger.
+      const filename = editor.document.fileName.split(/[\\/]/).pop() ?? "file";
+      state.sidePanel.showLoading(filename);
       void getOrFetchTranslation(state, editor.document).then((t) => {
         if (t) {
-          state.sidePanel.update(t, editor.document);
+          sidePanelUpdate(state, t, editor.document);
         }
       });
     }),
