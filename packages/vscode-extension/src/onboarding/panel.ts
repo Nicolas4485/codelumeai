@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { GraphStore, FileStat, TopSymbol } from "../graph/store";
+import type { GraphStore } from "../graph/store";
 import type { Briefing, ChatMessage } from "@codelumeai/core";
 
 type InboundMessage =

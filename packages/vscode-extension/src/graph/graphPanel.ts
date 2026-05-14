@@ -1,11 +1,6 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { GraphStore, FileStat, GraphEdge } from "./store";
-
-interface GraphNode extends FileStat {
-  id: string; // same as path
-  label: string; // short filename
-}
+import type { GraphStore, FileStat } from "./store";
 
 type InboundMessage =
   | { type: "navigateTo"; file: string }
@@ -65,7 +60,7 @@ export class GraphPanel {
   private sendData(store: GraphStore): void {
     if (!this.panel) return;
     const stats = store.stats();
-    const allFileStats = store.getFileStats().filter((f) => f.symbolCount > 0);
+    const allFileStats: FileStat[] = store.getFileStats().filter((f) => f.symbolCount > 0);
 
     // Cap nodes at 120 for rendering performance; keep the most connected ones.
     const fileStats = allFileStats
