@@ -66,12 +66,22 @@ export interface RefRow {
   fromChar: number;
 }
 
+/** A single use-site for an incoming symbol. */
+export interface RefLocation {
+  file: string;
+  /** 1-indexed. */
+  line: number;
+  /** The innermost function/method that contains this reference, if resolvable. */
+  inSymbol?: { name: string; kind: SymbolKind };
+}
+
 /**
  * The "Connected" data for one chunk in the side panel.
  * - outgoing: symbols referenced from inside the chunk that are defined elsewhere
  * - incoming: symbols defined inside the chunk that are used elsewhere, with use counts
+ *   and the individual ref locations so the UI can render a drilldown list
  */
 export interface ConnectedSymbols {
   outgoing: SymbolRow[];
-  incoming: Array<{ symbol: SymbolRow; refCount: number }>;
+  incoming: Array<{ symbol: SymbolRow; refCount: number; refs: RefLocation[] }>;
 }

@@ -13,6 +13,15 @@ export interface ApplyEditArgs {
   newEnglish: string;
 }
 
+/** Emitted after a code change is successfully applied to the document. */
+export interface ApplyEditInfo {
+  document: vscode.TextDocument;
+  startLine: number;
+  endLine: number;
+  originalEnglish: string;
+  newEnglish: string;
+}
+
 /**
  * The bidirectional-edit flow. Translates an edited English description
  * into a code change, shows it as a diff, and applies on user confirmation.
@@ -28,6 +37,9 @@ export interface ApplyEditArgs {
  *   6. On Apply, use a WorkspaceEdit to replace the line range.
  */
 export class EditFlow {
+  /** Called after a change is successfully applied. Wire this in extension.ts to detect impact. */
+  onApplied: ((info: ApplyEditInfo) => void) | undefined;
+
   private readonly previewProvider: PreviewContentProvider;
 
   constructor(
@@ -178,6 +190,13 @@ export class EditFlow {
       void vscode.window.showInformationMessage(
         `CodeLumeAI: applied change to L${String(change.startLine)}-L${String(change.endLine)}.`,
       );
+      this.onApplied?.({
+        document: args.document,
+        startLine: change.startLine,
+        endLine: change.endLine,
+        originalEnglish: args.originalEnglish,
+        newEnglish: args.newEnglish,
+      });
     } else {
       this.log(`  WorkspaceEdit.applyEdit returned false`);
       void vscode.window.showErrorMessage(

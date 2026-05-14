@@ -31,4 +31,17 @@ export {
   ENGLISH_TO_CODE_SYSTEM_PROMPT,
 } from "./prompts";
 
+export { generateBriefing, BriefingSchema } from "./briefing";
+export type {
+  Briefing,
+  KeyConcept,
+  TopSymbolInput,
+  FileStructureInput,
+  TranslationSummary,
+  GenerateBriefingOptions,
+} from "./briefing";
+
+export { chatWithCodebase } from "./chat";
+export type { ChatMessage, ChatWithCodebaseOptions } from "./chat";
+
 export const VERSION = "0.0.0";

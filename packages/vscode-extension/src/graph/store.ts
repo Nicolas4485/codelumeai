@@ -2,19 +2,49 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import * as vscode from "vscode";
-import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
+import type { Database, SqlJsStatic } from "sql.js";
 import { SCHEMA_SQL } from "./schema";
-import type { ConnectedSymbols, RefRow, SymbolRow } from "./types";
+import type { ConnectedSymbols, RefLocation, RefRow, SymbolKind, SymbolRow } from "./types";
+
+export interface GraphEdge {
+  from: string;
+  to: string;
+  weight: number;
+}
+
+export interface TopSymbol {
+  id: string;
+  name: string;
+  kind: string;
+  file: string;
+  startLine: number;
+  totalRefs: number;
+}
+
+export interface FileStat {
+  path: string;
+  language: string;
+  symbolCount: number;
+  incomingRefs: number;
+  outgoingDeps: number;
+}
 
 let sqlJsPromise: Promise<SqlJsStatic> | undefined;
 
 /**
- * Initialize sql.js once per process. The WASM blob lives at:
+ * Initialize sql.js once per process. Uses a dynamic require so sql.js's
+ * Emscripten bootstrap code does NOT run at extension-host startup — only
+ * the first time GraphStore.open() is actually called. Without this deferral
+ * the extension host can time-out on the 10-second startup window.
+ *
+ * The WASM blob lives at:
  *   - dev (F5): node_modules/sql.js/dist/sql-wasm.wasm
  *   - packaged (.vsix): dist/sql-wasm.wasm (copied at build time)
  */
 function loadSqlJs(extensionPath: string): Promise<SqlJsStatic> {
   if (!sqlJsPromise) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const initSqlJs = (require("sql.js") as { default: (config: object) => Promise<SqlJsStatic> }).default;
     sqlJsPromise = initSqlJs({
       locateFile: (file: string) => {
         const candidates = [
@@ -24,8 +54,6 @@ function loadSqlJs(extensionPath: string): Promise<SqlJsStatic> {
         for (const candidate of candidates) {
           if (fs.existsSync(candidate)) return candidate;
         }
-        // Fall through and let sql.js throw a clear error pointing at the
-        // missing wasm file — better than us silently failing.
         return file;
       },
     });
@@ -243,23 +271,150 @@ export class GraphStore {
       ":sl": args.startLine,
       ":el": args.endLine,
     });
-    const incoming: Array<{ symbol: SymbolRow; refCount: number }> = [];
+    const rawIncoming: Array<{ symbol: SymbolRow; refCount: number }> = [];
     while (incomingStmt.step()) {
       const row = incomingStmt.getAsObject() as unknown as SymbolRow & {
         refCount: number;
       };
       if (row.refCount && row.refCount > 0) {
         const { refCount, ...sym } = row;
-        incoming.push({ symbol: sym, refCount });
+        rawIncoming.push({ symbol: sym, refCount });
       }
     }
     incomingStmt.free();
-    incoming.sort(
+    rawIncoming.sort(
       (a, b) =>
         b.refCount - a.refCount || a.symbol.name.localeCompare(b.symbol.name),
     );
 
+    // Fetch the actual ref locations for each incoming symbol so the UI can
+    // render a drilldown list. IDs are sha256 hex (safe to inline).
+    // The correlated subquery finds the narrowest enclosing function/method
+    // for each ref by picking the containing symbol with the smallest line range.
+    const refsBySymbol = new Map<string, RefLocation[]>();
+    if (rawIncoming.length > 0) {
+      const idList = rawIncoming.map((i) => `'${i.symbol.id}'`).join(",");
+      const refsStmt = this.db.prepare(`
+        SELECT r.to_symbol, r.from_file, r.from_line,
+          (SELECT s2.name FROM symbols s2
+           WHERE s2.file = r.from_file
+             AND r.from_line BETWEEN s2.start_line AND s2.end_line
+             AND s2.kind IN ('function','method','constructor','class')
+           ORDER BY (s2.end_line - s2.start_line) ASC
+           LIMIT 1) AS in_name,
+          (SELECT s2.kind FROM symbols s2
+           WHERE s2.file = r.from_file
+             AND r.from_line BETWEEN s2.start_line AND s2.end_line
+             AND s2.kind IN ('function','method','constructor','class')
+           ORDER BY (s2.end_line - s2.start_line) ASC
+           LIMIT 1) AS in_kind
+        FROM refs r
+        WHERE r.to_symbol IN (${idList})
+          AND NOT (r.from_file = :file AND r.from_line BETWEEN :sl AND :el)
+        ORDER BY r.from_file, r.from_line
+      `);
+      refsStmt.bind({ ":file": args.file, ":sl": args.startLine, ":el": args.endLine });
+      while (refsStmt.step()) {
+        const r = refsStmt.getAsObject() as unknown as {
+          to_symbol: string;
+          from_file: string;
+          from_line: number;
+          in_name: string | null;
+          in_kind: string | null;
+        };
+        let list = refsBySymbol.get(r.to_symbol);
+        if (!list) { list = []; refsBySymbol.set(r.to_symbol, list); }
+        const loc: RefLocation = { file: r.from_file, line: r.from_line };
+        if (r.in_name && r.in_kind) {
+          loc.inSymbol = { name: r.in_name, kind: r.in_kind as SymbolKind };
+        }
+        list.push(loc);
+      }
+      refsStmt.free();
+    }
+
+    const incoming = rawIncoming.map((item) => ({
+      ...item,
+      refs: refsBySymbol.get(item.symbol.id) ?? [],
+    }));
+
     return { outgoing, incoming };
+  }
+
+  /**
+   * All cross-file dependency edges, capped for rendering performance.
+   * Each edge represents one file importing/calling symbols from another.
+   * Weight = number of distinct symbol references between the two files.
+   */
+  getGraphEdges(maxEdges = 400): GraphEdge[] {
+    const stmt = this.db.prepare(`
+      SELECT r.from_file AS "from", s.file AS "to", COUNT(*) AS weight
+      FROM refs r
+      JOIN symbols s ON r.to_symbol = s.id
+      WHERE r.from_file != s.file
+      GROUP BY r.from_file, s.file
+      ORDER BY weight DESC
+      LIMIT :limit
+    `);
+    stmt.bind({ ":limit": maxEdges });
+    const results: GraphEdge[] = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject() as unknown as GraphEdge);
+    }
+    stmt.free();
+    return results;
+  }
+
+  /**
+   * Top N symbols by number of distinct files that reference them.
+   * Used by the onboarding panel to surface the most important concepts.
+   */
+  getTopSymbols(limit: number): TopSymbol[] {
+    const stmt = this.db.prepare(`
+      SELECT s.id, s.name, s.kind, s.file, s.start_line AS startLine,
+             COUNT(DISTINCT r.from_file) AS totalRefs
+      FROM symbols s
+      JOIN refs r ON r.to_symbol = s.id
+      WHERE r.from_file != s.file
+      GROUP BY s.id
+      ORDER BY totalRefs DESC
+      LIMIT :limit
+    `);
+    stmt.bind({ ":limit": limit });
+    const results: TopSymbol[] = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject() as unknown as TopSymbol);
+    }
+    stmt.free();
+    return results;
+  }
+
+  /**
+   * Per-file stats used by the onboarding reading-order view.
+   * incomingRefs = distinct files that use anything from this file.
+   * outgoingDeps = distinct files this file pulls symbols from.
+   */
+  getFileStats(): FileStat[] {
+    const stmt = this.db.prepare(`
+      SELECT
+        f.path,
+        f.language,
+        (SELECT COUNT(*) FROM symbols s WHERE s.file = f.path) AS symbolCount,
+        (SELECT COUNT(DISTINCT r.from_file)
+           FROM refs r JOIN symbols s ON r.to_symbol = s.id
+           WHERE s.file = f.path AND r.from_file != f.path) AS incomingRefs,
+        (SELECT COUNT(DISTINCT s2.file)
+           FROM refs r2 JOIN symbols s2 ON r2.to_symbol = s2.id
+           WHERE r2.from_file = f.path AND s2.file != f.path) AS outgoingDeps
+      FROM files f
+      ORDER BY incomingRefs DESC, symbolCount DESC
+    `);
+    const results: FileStat[] = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject() as unknown as FileStat);
+    }
+    stmt.free();
+    return results;
   }
 
   /** Diagnostic counts for the status bar / output channel. */

@@ -4,16 +4,13 @@
     {
       "label": "build extension",
       "type": "shell",
-      "command": "pnpm",
-      "args": ["build"],
-      "options": {
-        "cwd": "${workspaceFolder}"
+      "command": "pnpm --filter codelumeai build",
+      "group": "build",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
       },
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
-      "problemMatcher": "$tsc"
+      "problemMatcher": []
     }
   ]
 }

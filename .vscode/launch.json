@@ -6,7 +6,10 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-extension"
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-extension",
+        "--new-window",
+        "--disable-restore-windows",
+        "C:\\Users\\sakrn\\Documents\\projects\\codelumeai"
       ],
       "outFiles": [
         "${workspaceFolder}/packages/vscode-extension/dist/**/*.js",

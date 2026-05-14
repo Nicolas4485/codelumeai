@@ -64,6 +64,21 @@
         "command": "codelumeai.showLogs",
         "title": "Show Logs",
         "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.indexWorkspace",
+        "title": "Index Workspace for Connections",
+        "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.newDevGuide",
+        "title": "New Developer Guide",
+        "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.showGraph",
+        "title": "Show Dependency Graph",
+        "category": "CodeLumeAI"
       }
     ],
     "configuration": {

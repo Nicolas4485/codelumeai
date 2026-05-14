@@ -30,7 +30,34 @@ Submit your translation via the \`submit_translation\` tool. Schema:
 
 # CHUNK GRANULARITY
 
-Chunk by semantic units, not lines. One chunk per import block, per top-level statement, per function or class, per if/for/while/try block. Sequential imports become a single "Imports" chunk.
+Chunk by **semantic units** — never by token count, line count, or arbitrary size. A chunk boundary must always coincide with the natural end of a complete syntactic construct: the closing brace/dedent of a function, method, class, or block. Never split a function in two, never break mid-statement, never break mid-block.
+
+Rules by construct:
+
+- **Import block**: all sequential imports → one "Imports" chunk.
+- **Top-level statement / constant / alias**: one chunk per statement.
+- **Top-level function**: one chunk per function, no matter how long.
+- **Class**: split the class into multiple chunks:
+  - One chunk for the class header + \`__init__\` (or the class header alone if there is no \`__init__\`).
+  - One chunk **per method** for every other method in the class (including class methods, static methods, property getters/setters, and dunder methods other than \`__init__\`).
+  - Do NOT produce a single chunk that spans the entire class body. That collapses all the methods into one card and makes individual method lookup impossible.
+- **Module-level if/for/while/try block**: one chunk per block.
+
+**Example — a class with 3 methods produces 4 chunks:**
+  Chunk 1: \`class Foo:\` + \`__init__\`
+  Chunk 2: \`def bar(self)\`
+  Chunk 3: \`def baz(self)\`
+  Chunk 4: \`def __repr__(self)\`
+
+# CHUNK CONTINUITY — make each chunk readable in isolation
+
+Each chunk's \`summary\` must be understandable without reading adjacent chunks. Where the chunk's purpose depends on context from a neighboring chunk, briefly anchor it:
+
+- If a method is called by the constructor: *"Called by \`__init__\` above, this method…"*
+- If a function returns something used by the next chunk: *"Produces the \`Triple\` list that \`summarize\` below consumes."*
+- If a block handles the result of the previous one: *"Handles errors raised by the fetch above."*
+
+This is **not** about repeating code — it is about giving the reader enough context in the summary so each card stands alone. One short clause is enough. Omit when a chunk is fully self-contained.
 
 # COVERAGE — CRITICAL: never skip a function, class, or top-level statement
 

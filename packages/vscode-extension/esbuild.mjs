@@ -12,7 +12,7 @@ const buildOptions = {
   entryPoints: ["src/extension.ts"],
   bundle: true,
   outfile: "dist/extension.js",
-  external: ["vscode"],
+  external: ["vscode", "sql.js"],
   format: "cjs",
   platform: "node",
   target: "node20",
