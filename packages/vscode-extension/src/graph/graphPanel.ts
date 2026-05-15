@@ -4,7 +4,8 @@ import type { GraphStore, FileStat } from "./store";
 
 type InboundMessage =
   | { type: "navigateTo"; file: string }
-  | { type: "ready" };
+  | { type: "ready" }
+  | { type: "indexWorkspace" };
 
 /**
  * Interactive dependency graph panel.
@@ -40,6 +41,9 @@ export class GraphPanel {
     this.panel.webview.onDidReceiveMessage((msg: InboundMessage) => {
       if (msg.type === "navigateTo") void this.navigateTo(msg.file);
       if (msg.type === "ready") this.sendData(store);
+      if (msg.type === "indexWorkspace") {
+        void vscode.commands.executeCommand("codelumeai.indexWorkspace");
+      }
     });
 
     this.panel.webview.html = this.buildHtml();
@@ -120,6 +124,107 @@ export class GraphPanel {
     .tb-btn:hover { background: var(--vscode-list-hoverBackground); }
     .tb-sep { width: 1px; height: 16px; background: var(--vscode-widget-border, rgba(128,128,128,0.3)); margin: 0 2px; }
     .tb-stat { font-size: 0.78em; color: var(--vscode-descriptionForeground); }
+    /* Graph / Documents view toggle */
+    .view-toggle {
+      display: flex; gap: 2px;
+      background: var(--vscode-widget-border, rgba(128,128,128,0.18));
+      border-radius: 4px; padding: 2px;
+    }
+    .vt-btn {
+      padding: 3px 12px; border: 0; border-radius: 3px;
+      background: transparent; color: var(--vscode-descriptionForeground);
+      cursor: pointer; font-size: 0.82em; font-family: inherit;
+    }
+    .vt-btn:hover { color: var(--vscode-foreground); }
+    .vt-btn.vt-active {
+      background: var(--vscode-editor-background);
+      color: var(--vscode-foreground);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+    }
+    /* Documents view — file list with filter + sort */
+    #documents-view {
+      position: absolute; inset: 0; padding: 64px 32px 32px 32px;
+      overflow-y: auto;
+    }
+    .docs-controls {
+      display: flex; gap: 8px; margin-bottom: 16px;
+      max-width: 900px;
+    }
+    #docs-search {
+      flex: 1; padding: 7px 12px;
+      border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.3));
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border-radius: 4px;
+      font-family: var(--vscode-font-family); font-size: 0.92em;
+    }
+    #docs-search:focus { outline: none; border-color: var(--vscode-focusBorder); }
+    #docs-sort {
+      padding: 7px 12px;
+      border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.3));
+      background: var(--vscode-dropdown-background, var(--vscode-input-background));
+      color: var(--vscode-foreground);
+      border-radius: 4px;
+      font-family: inherit; font-size: 0.9em;
+    }
+    #docs-count {
+      font-size: 0.82em; color: var(--vscode-descriptionForeground);
+      margin-bottom: 8px; max-width: 900px;
+    }
+    #docs-list {
+      display: flex; flex-direction: column; gap: 4px;
+      max-width: 900px;
+    }
+    .doc-item {
+      display: flex; align-items: center; gap: 14px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .doc-item:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+    .doc-item.doc-active {
+      background: var(--vscode-list-activeSelectionBackground);
+      border-color: var(--vscode-focusBorder);
+    }
+    .doc-lang { width: 8px; height: 32px; border-radius: 3px; flex-shrink: 0; }
+    .doc-meta { flex: 1; min-width: 0; }
+    .doc-path {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.95em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .doc-stats {
+      margin-top: 3px;
+      font-size: 0.8em;
+      color: var(--vscode-descriptionForeground);
+      display: flex; gap: 14px;
+    }
+    .doc-stats span::before { opacity: 0.7; margin-right: 3px; }
+    .ds-sym::before { content: "□"; }
+    .ds-in::before { content: "↓"; }
+    .ds-out::before { content: "↑"; }
+    .doc-empty {
+      padding: 32px; text-align: center;
+      color: var(--vscode-descriptionForeground); font-style: italic;
+    }
+    /* Improved empty state with CTA */
+    .empty-icon { font-size: 2.4em; opacity: 0.35; }
+    .empty-title { font-size: 1.15em; font-weight: 600; color: var(--vscode-foreground); }
+    .empty-desc { max-width: 420px; text-align: center; line-height: 1.55; }
+    .empty-cta {
+      margin-top: 8px;
+      padding: 8px 20px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: 0; border-radius: 4px;
+      font-family: inherit; font-size: 0.95em;
+      cursor: pointer;
+    }
+    .empty-cta:hover { background: var(--vscode-button-hoverBackground); }
     #tooltip {
       position: absolute; pointer-events: none; display: none;
       background: var(--vscode-editorWidget-background, rgba(30,30,30,0.96));
@@ -144,10 +249,28 @@ export class GraphPanel {
 <body>
 <canvas id="canvas"></canvas>
 <div id="toolbar">
-  <button class="tb-btn" id="btn-fit">Fit</button>
-  <button class="tb-btn" id="btn-reset">Reset layout</button>
+  <div class="view-toggle">
+    <button class="vt-btn vt-active" data-view="graph">Graph</button>
+    <button class="vt-btn" data-view="documents">Documents</button>
+  </div>
   <div class="tb-sep"></div>
+  <button class="tb-btn graph-only" id="btn-fit">Fit</button>
+  <button class="tb-btn graph-only" id="btn-reset">Reset layout</button>
+  <div class="tb-sep graph-only"></div>
   <span class="tb-stat" id="tb-info">Loading…</span>
+</div>
+<div id="documents-view" style="display:none">
+  <div class="docs-controls">
+    <input type="search" id="docs-search" placeholder="Filter files…" autocomplete="off">
+    <select id="docs-sort">
+      <option value="incoming">Sort: most depended-on</option>
+      <option value="outgoing">Sort: most dependencies</option>
+      <option value="symbols">Sort: most symbols</option>
+      <option value="path">Sort: path A→Z</option>
+    </select>
+  </div>
+  <div id="docs-count"></div>
+  <div id="docs-list"></div>
 </div>
 <div id="tooltip">
   <div class="tt-name" id="tt-name"></div>
@@ -165,8 +288,10 @@ export class GraphPanel {
   <div style="margin-top:6px;color:var(--vscode-descriptionForeground)">Node size = how many<br>files depend on it</div>
 </div>
 <div id="empty" style="display:none">
-  <div style="font-size:1.1em;font-weight:600">No graph data yet</div>
-  <div>Run <strong>CodeLumeAI: Index Workspace for Connections</strong> first.</div>
+  <div class="empty-icon">🕸️</div>
+  <div class="empty-title">No graph data yet</div>
+  <div class="empty-desc">Index your workspace to map symbols and references across every file. CodeLumeAI uses your installed language servers — no extra setup.</div>
+  <button class="empty-cta" id="empty-cta">Index Workspace</button>
 </div>
 <script nonce="${nonce}">
 (function() {
@@ -183,6 +308,10 @@ export class GraphPanel {
   let panning = false, panStartX = 0, panStartY = 0, panOriginX = 0, panOriginY = 0;
   let hoveredNode = null;
   let animFrame = null;
+  // View toggle state
+  let currentView = 'graph'; // 'graph' | 'documents'
+  let docsSearch = '';
+  let docsSort = 'incoming';
 
   // ── Colors ────────────────────────────────────────────────────────────────────
   const LANG_COLOR = {
@@ -527,22 +656,25 @@ export class GraphPanel {
       edges = msg.edges;
       activeFile = msg.activeFile || null;
 
-      document.getElementById('empty').style.display = nodes.length === 0 ? 'flex' : 'none';
-      canvas.style.display = nodes.length === 0 ? 'none' : 'block';
-      document.getElementById('toolbar').style.display = nodes.length === 0 ? 'none' : 'flex';
-      document.getElementById('legend').style.display = nodes.length === 0 ? 'none' : 'block';
+      const hasData = nodes.length > 0;
+      document.getElementById('empty').style.display = hasData ? 'none' : 'flex';
+      document.getElementById('toolbar').style.display = hasData ? 'flex' : 'none';
+      applyViewVisibility();
 
-      if (nodes.length > 0) {
+      if (hasData) {
         document.getElementById('tb-info').textContent =
           msg.stats.files + ' files · ' + msg.stats.symbols + ' symbols · ' + msg.stats.refs + ' connections';
-        resizeCanvas();
-        sim = initSim(nodes, edges);
-        // Warm up: 250 ticks off-screen before showing
-        for (let i = 0; i < 250; i++) sim.tick();
-        fitView();
-        simRunning = true;
-        setTimeout(() => { simRunning = false; }, 3500);
-        runSim();
+        if (currentView === 'graph') {
+          resizeCanvas();
+          sim = initSim(nodes, edges);
+          for (let i = 0; i < 250; i++) sim.tick();
+          fitView();
+          simRunning = true;
+          setTimeout(() => { simRunning = false; }, 3500);
+          runSim();
+        } else {
+          renderDocsList();
+        }
       }
     }
 
@@ -550,6 +682,104 @@ export class GraphPanel {
       activeFile = msg.file;
       scheduleFrame();
     }
+  });
+
+  // ── View toggle + Documents list ──────────────────────────────────────────────
+  function applyViewVisibility() {
+    const hasData = nodes.length > 0;
+    canvas.style.display = (hasData && currentView === 'graph') ? 'block' : 'none';
+    document.getElementById('legend').style.display = (hasData && currentView === 'graph') ? 'block' : 'none';
+    document.getElementById('documents-view').style.display = (hasData && currentView === 'documents') ? 'block' : 'none';
+    // Graph-only toolbar items
+    document.querySelectorAll('.graph-only').forEach(el => {
+      el.style.display = currentView === 'graph' ? '' : 'none';
+    });
+  }
+
+  function setView(view) {
+    if (view === currentView) return;
+    currentView = view;
+    document.querySelectorAll('.vt-btn').forEach(b => {
+      b.classList.toggle('vt-active', b.dataset.view === view);
+    });
+    applyViewVisibility();
+    if (view === 'documents') {
+      renderDocsList();
+    } else if (view === 'graph' && nodes.length > 0 && !sim) {
+      resizeCanvas();
+      sim = initSim(nodes, edges);
+      for (let i = 0; i < 250; i++) sim.tick();
+      fitView();
+    } else if (view === 'graph') {
+      resizeCanvas();
+      scheduleFrame();
+    }
+  }
+
+  document.querySelectorAll('.vt-btn').forEach(b => {
+    b.addEventListener('click', () => setView(b.dataset.view));
+  });
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  function renderDocsList() {
+    const list = document.getElementById('docs-list');
+    const countEl = document.getElementById('docs-count');
+    if (!nodes.length) {
+      list.innerHTML = '<div class="doc-empty">No files indexed yet.</div>';
+      countEl.textContent = '';
+      return;
+    }
+    const q = docsSearch.toLowerCase();
+    let items = q ? nodes.filter(n => n.path.toLowerCase().includes(q)) : nodes.slice();
+    const sorters = {
+      incoming: (a, b) => b.incomingRefs - a.incomingRefs || a.path.localeCompare(b.path),
+      outgoing: (a, b) => b.outgoingDeps - a.outgoingDeps || a.path.localeCompare(b.path),
+      symbols: (a, b) => b.symbolCount - a.symbolCount || a.path.localeCompare(b.path),
+      path: (a, b) => a.path.localeCompare(b.path),
+    };
+    items.sort(sorters[docsSort] || sorters.incoming);
+
+    countEl.textContent = items.length + ' file' + (items.length === 1 ? '' : 's') +
+      (q ? ' matching "' + q + '"' : '') + ' · click to open';
+
+    list.innerHTML = items.map(n => {
+      const isActive = n.path === activeFile;
+      const color = LANG_COLOR[n.language] || '#7B8DB0';
+      return '<div class="doc-item' + (isActive ? ' doc-active' : '') + '" data-path="' + escapeHtml(n.path) + '">' +
+        '<div class="doc-lang" style="background:' + color + '"></div>' +
+        '<div class="doc-meta">' +
+          '<div class="doc-path">' + escapeHtml(n.path) + '</div>' +
+          '<div class="doc-stats">' +
+            '<span class="ds-sym">' + n.symbolCount + ' symbols</span>' +
+            '<span class="ds-in">' + n.incomingRefs + ' incoming</span>' +
+            '<span class="ds-out">' + n.outgoingDeps + ' outgoing</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    list.querySelectorAll('.doc-item').forEach(el => {
+      el.addEventListener('click', () => {
+        vscode.postMessage({ type: 'navigateTo', file: el.dataset.path });
+      });
+    });
+  }
+
+  document.getElementById('docs-search').addEventListener('input', e => {
+    docsSearch = e.target.value;
+    renderDocsList();
+  });
+  document.getElementById('docs-sort').addEventListener('change', e => {
+    docsSort = e.target.value;
+    renderDocsList();
+  });
+
+  // Empty-state CTA → trigger the existing index command
+  document.getElementById('empty-cta').addEventListener('click', () => {
+    vscode.postMessage({ type: 'indexWorkspace' });
   });
 
   // Signal ready to receive data
