@@ -1,8 +1,8 @@
 {
   "name": "codelumeai",
   "displayName": "CodeLumeAI",
-  "description": "Read your code in plain English. Hover any function to see what it does.",
-  "version": "0.0.0",
+  "description": "Read, navigate, and edit any codebase in plain English. Hover translations, side panel, dependency graph, blast-radius preview, and AI codebase chat.",
+  "version": "0.1.0",
   "private": true,
   "publisher": "nic-ai",
   "license": "MIT",
@@ -73,6 +73,11 @@
       {
         "command": "codelumeai.newDevGuide",
         "title": "New Developer Guide",
+        "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.generateClaudeMd",
+        "title": "Generate CLAUDE.md (Claude Code context file)",
         "category": "CodeLumeAI"
       },
       {
