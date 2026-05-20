@@ -568,6 +568,121 @@ function buildCodebaseContext(state: ExtensionState): {
   };
 }
 
+const SETUP_COMPLETE_KEY = "codelumeai.setupComplete";
+
+/**
+ * Shared indexing logic used by both the `indexWorkspace` command and the
+ * first-run setup flow. Returns the number of files indexed, or -1 on error.
+ */
+async function runIndexWorkspace(state: ExtensionState): Promise<number> {
+  if (!state.workspaceFolderUri || !state.graphStore) return -1;
+  const uris = await vscode.workspace.findFiles(
+    "**/*.{ts,tsx,js,jsx,py,go,rs,java,cs,rb,php,html,css,scss}",
+    "{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/__pycache__/**,.turbo/**}",
+  );
+  if (uris.length === 0) return 0;
+  const cancel = new vscode.CancellationTokenSource();
+  let indexed = 0;
+  let skipped = 0;
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "CodeLumeAI: Indexing workspace…", cancellable: true },
+    async (progress, token) => {
+      token.onCancellationRequested(() => { cancel.cancel(); });
+      const SAVE_EVERY = 25;
+      for (const uri of uris) {
+        if (cancel.token.isCancellationRequested) break;
+        try {
+          const result = await indexFile({
+            store: state.graphStore as GraphStore,
+            uri,
+            workspaceFolder: state.workspaceFolderUri as vscode.Uri,
+            cancellation: cancel.token,
+          });
+          if (result.empty) { skipped++; } else {
+            indexed++;
+            log(state, "info", `Graph: ${result.file} — ${result.symbolCount} sym, ${result.refCount} refs, ${result.durationMs}ms`);
+          }
+        } catch (err) {
+          log(state, "warn", `Graph: failed ${uri.fsPath}: ${String(err)}`);
+          skipped++;
+        }
+        if ((indexed + skipped) % SAVE_EVERY === 0) (state.graphStore as GraphStore).save();
+        progress.report({ increment: 100 / uris.length, message: `${indexed + skipped}/${uris.length}` });
+      }
+      (state.graphStore as GraphStore).save();
+      cancel.dispose();
+      const s = (state.graphStore as GraphStore).stats();
+      log(state, "info", `Graph: done. ${s.files} files, ${s.symbols} symbols, ${s.refs} refs.`);
+      refreshSidePanelIfNeeded(state);
+    },
+  );
+  return indexed;
+}
+
+/**
+ * First-run guided setup. Fires once, the first time a user activates the
+ * extension. Walks them through: API key → index workspace → open guide.
+ * Skipped entirely if the user already has an API key (returning user who
+ * set up manually, or a re-install after the flag was cleared).
+ */
+async function runFirstTimeSetup(state: ExtensionState): Promise<void> {
+  // Already completed setup — nothing to do.
+  if (state.context.globalState.get<boolean>(SETUP_COMPLETE_KEY)) return;
+
+  const existingKey = await state.context.secrets.get(SECRET_KEY);
+
+  // Returning user (has a key already, just missing the flag) — mark done and exit.
+  if (existingKey) {
+    await state.context.globalState.update(SETUP_COMPLETE_KEY, true);
+    return;
+  }
+
+  // ── Step 1: Welcome message ───────────────────────────────────────────────
+  const action = await vscode.window.showInformationMessage(
+    "👋 Welcome to CodeLumeAI! Read any codebase in plain English. Let's get you set up — it takes about 60 seconds.",
+    { modal: false },
+    "Get Started",
+  );
+  if (!action) return; // user dismissed — they can run the command manually later
+
+  // ── Step 2: API key ───────────────────────────────────────────────────────
+  const key = await vscode.window.showInputBox({
+    title: "CodeLumeAI — Step 1 of 2: Anthropic API Key",
+    prompt: "Paste your Anthropic API key. Stored securely in VS Code — never in settings.json.",
+    placeHolder: "sk-ant-…",
+    password: true,
+    ignoreFocusOut: true,
+    validateInput: (v) =>
+      v && v.startsWith("sk-") ? null : "Anthropic keys start with 'sk-'. Get one at console.anthropic.com",
+  });
+  if (!key) return; // user cancelled — leave flag unset so it re-prompts next session
+
+  await state.context.secrets.store(SECRET_KEY, key);
+  state.cache.clear();
+  log(state, "info", "First-run: API key saved.");
+
+  // ── Step 3: Index workspace ───────────────────────────────────────────────
+  if (state.workspaceFolderUri) {
+    await ensureGraphStore(state);
+    if (state.graphStore) {
+      const count = await runIndexWorkspace(state);
+      log(state, "info", `First-run: indexed ${count} files.`);
+    }
+  }
+
+  // ── Step 4: Open the developer guide ──────────────────────────────────────
+  if (!state.onboardingPanel) {
+    state.onboardingPanel = makeOnboardingPanel(state);
+  }
+  if (state.graphStore) {
+    state.onboardingPanel.show(state.graphStore);
+  }
+
+  // ── Done ──────────────────────────────────────────────────────────────────
+  await state.context.globalState.update(SETUP_COMPLETE_KEY, true);
+  log(state, "info", "First-run setup complete.");
+}
+
 function makeOnboardingPanel(state: ExtensionState): OnboardingPanel {
   const BRIEFING_CACHE_KEY = `codelumeai.briefing.${
     state.workspaceFolderUri
@@ -728,56 +843,17 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showErrorMessage("CodeLumeAI: Graph store could not be opened — check the CodeLumeAI logs.");
         return;
       }
-      const uris = await vscode.workspace.findFiles(
-        "**/*.{ts,tsx,js,jsx,py,go,rs,java,cs,rb,php,html,css,scss}",
-        "{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/__pycache__/**,.turbo/**}",
-      );
-      if (uris.length === 0) {
+      const indexed = await runIndexWorkspace(state);
+      if (indexed === 0) {
         void vscode.window.showInformationMessage("CodeLumeAI: No supported files found in workspace.");
         return;
       }
-      const cancel = new vscode.CancellationTokenSource();
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "CodeLumeAI: Indexing workspace…", cancellable: true },
-        async (progress, token) => {
-          token.onCancellationRequested(() => { cancel.cancel(); });
-          let indexed = 0;
-          let skipped = 0;
-          const SAVE_EVERY = 25;
-          for (const uri of uris) {
-            if (cancel.token.isCancellationRequested) break;
-            try {
-              const result = await indexFile({
-                store: state.graphStore as GraphStore,
-                uri,
-                workspaceFolder: state.workspaceFolderUri as vscode.Uri,
-                cancellation: cancel.token,
-              });
-              if (result.empty) {
-                skipped++;
-              } else {
-                indexed++;
-                log(state, "info", `Graph: ${result.file} — ${result.symbolCount} sym, ${result.refCount} refs, ${result.durationMs}ms`);
-              }
-            } catch (err) {
-              log(state, "warn", `Graph: failed ${uri.fsPath}: ${String(err)}`);
-              skipped++;
-            }
-            if ((indexed + skipped) % SAVE_EVERY === 0) {
-              (state.graphStore as GraphStore).save();
-            }
-            progress.report({ increment: 100 / uris.length, message: `${indexed + skipped}/${uris.length}` });
-          }
-          (state.graphStore as GraphStore).save();
-          cancel.dispose();
-          const s = (state.graphStore as GraphStore).stats();
-          log(state, "info", `Graph: done. ${s.files} files, ${s.symbols} symbols, ${s.refs} refs.`);
-          void vscode.window.showInformationMessage(
-            `CodeLumeAI: Indexed ${indexed} files (${skipped} skipped). ${s.symbols} symbols, ${s.refs} cross-file references.`,
-          );
-          refreshSidePanelIfNeeded(state);
-        },
-      );
+      if (indexed > 0) {
+        const s = (state.graphStore).stats();
+        void vscode.window.showInformationMessage(
+          `CodeLumeAI: Indexed ${indexed} files. ${s.symbols} symbols, ${s.refs} cross-file references.`,
+        );
+      }
     }),
 
     vscode.commands.registerCommand("codelumeai.newDevGuide", async () => {
@@ -926,6 +1002,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   updateStatusBar(state);
+
+  // First-run guided setup — fires once after a fresh install, then never again.
+  void runFirstTimeSetup(state);
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
