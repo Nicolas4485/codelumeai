@@ -673,6 +673,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
+  // Blast-radius preview: when a chunk is hovered in the side panel, highlight
+  // its connected files in the graph panel (if open).
+  state.sidePanel.onPreviewImpact = (files) => {
+    state.graphPanel?.highlightConnectedFiles(files);
+  };
+
   // When the user clicks "Review impact" in the side panel, show a Quick Pick
   // listing all affected files so they can navigate to each one.
   state.sidePanel.onReviewImpact = () => {

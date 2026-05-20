@@ -12,7 +12,8 @@ interface WebviewMessage {
     | "panelScrolled"
     | "applyEdit"
     | "navigateTo"
-    | "reviewImpact";
+    | "reviewImpact"
+    | "previewImpact";
   startLine?: number;
   endLine?: number;
   chunkIndex?: number;
@@ -20,6 +21,7 @@ interface WebviewMessage {
   newEnglish?: string;
   file?: string;
   line?: number;
+  files?: string[];
 }
 
 /**
@@ -36,6 +38,13 @@ interface WebviewMessage {
 export class SidePanel {
   /** Set by extension.ts — called when the user clicks "Review impact" in the panel. */
   onReviewImpact: (() => void) | undefined;
+
+  /**
+   * Set by extension.ts — called when a chunk is hovered in the side panel.
+   * Receives the list of connected file paths so the graph panel can highlight
+   * the blast radius. Called with an empty array when hover ends.
+   */
+  onPreviewImpact: ((files: string[]) => void) | undefined;
 
   private panel: vscode.WebviewPanel | undefined;
   private currentDocument: vscode.TextDocument | undefined;
@@ -116,6 +125,7 @@ export class SidePanel {
           return;
         case "clearHighlight":
           this.clearEditorHighlights();
+          this.onPreviewImpact?.([]); // restore graph when chunk hover ends
           return;
         case "revealLines":
           if (msg.startLine !== undefined && msg.endLine !== undefined) {
@@ -158,6 +168,9 @@ export class SidePanel {
           return;
         case "reviewImpact":
           this.onReviewImpact?.();
+          return;
+        case "previewImpact":
+          this.onPreviewImpact?.(msg.files ?? []);
           return;
       }
     });
@@ -894,9 +907,21 @@ export class SidePanel {
           const start = parseInt(el.dataset.start, 10);
           const end = parseInt(el.dataset.end, 10);
           vscode.postMessage({ type: 'highlightLines', startLine: start, endLine: end });
+          // Blast-radius preview: collect connected files for the graph panel
+          const chunkIdx = parseInt(el.dataset.chunk, 10);
+          const conn = (currentGraphConnections && !isNaN(chunkIdx)) ? currentGraphConnections[chunkIdx] : null;
+          if (conn) {
+            const files = new Set([
+              ...(conn.outgoing || []).map(s => s.file),
+              ...(conn.incoming || []).flatMap(i => (i.refs || []).map(r => r.file)),
+            ]);
+            if (files.size > 0) {
+              vscode.postMessage({ type: 'previewImpact', files: [...files] });
+            }
+          }
         });
         el.addEventListener('mouseleave', () => {
-          vscode.postMessage({ type: 'clearHighlight' });
+          vscode.postMessage({ type: 'clearHighlight' }); // also clears graph preview via onPreviewImpact
         });
         el.addEventListener('click', () => {
           const start = parseInt(el.dataset.start, 10);
