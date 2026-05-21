@@ -345,6 +345,15 @@ export class GraphPanel {
   // Feature 2: cluster palette — 8 distinct colours for module groups
   const CLUSTER_PALETTE = ['#4f9bff','#a78bfa','#34d399','#f59e0b','#f87171','#38bdf8','#fb923c','#c084fc'];
 
+  const LANG_COLOR = {
+    'typescript': '#3178c6', 'typescriptreact': '#3178c6',
+    'javascript': '#f0db4f', 'javascriptreact': '#f0db4f',
+    'python': '#3572A5', 'go': '#00ADD8', 'rust': '#DEA584',
+    'java': '#b07219', 'csharp': '#239120', 'ruby': '#CC342D',
+    'php': '#4F5D95', 'css': '#563d7c', 'scss': '#c6538c',
+    'html': '#e34c26',
+  };
+
   // Feature 3: lerp two hex colours
   function lerpColor(hex1, hex2, t) {
     const p = h => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
@@ -403,12 +412,12 @@ export class GraphPanel {
 
       ctx.save();
       // Fill
-      ctx.globalAlpha = 0.07;
+      ctx.globalAlpha = 0.11;
       ctx.fillStyle = color;
       roundRect(minX, minY, bw, bh, rx);
       ctx.fill();
       // Border
-      ctx.globalAlpha = 0.18;
+      ctx.globalAlpha = 0.30;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1 / transform.scale;
       roundRect(minX, minY, bw, bh, rx);
@@ -419,7 +428,7 @@ export class GraphPanel {
         const fs = Math.max(10, Math.min(18, 14 / transform.scale));
         ctx.font = '600 ' + fs + 'px var(--vscode-font-family, sans-serif)';
         ctx.fillStyle = color;
-        ctx.globalAlpha = 0.45;
+        ctx.globalAlpha = 0.65;
         ctx.textAlign = 'center';
         ctx.fillText(name, (minX + maxX) / 2, minY - 6 / transform.scale);
       }
@@ -534,7 +543,7 @@ export class GraphPanel {
         dimmed = !highlighted;
         isAmber = highlighted;
       }
-      const alpha = dimmed ? 0.05 : highlighted ? 0.7 : 0.18;
+      const alpha = dimmed ? 0.04 : highlighted ? 0.75 : 0.28;
       const lw = highlighted ? Math.min(e.weight * 0.5 + 1, 3) : 1;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
@@ -572,7 +581,9 @@ export class GraphPanel {
       const isActive = n.id === activeFile;
       const isHov = n === hov;
       const isPreviewHit = usePreview && previewFiles.has(n.id);
-      ctx.globalAlpha = dimmed ? 0.15 : 1;
+      const isIsolated = n.incomingRefs === 0 && n.outgoingDeps === 0;
+      const baseAlpha = (isIsolated && !useHover && !usePreview) ? 0.55 : 1;
+      ctx.globalAlpha = dimmed ? 0.13 : baseAlpha;
 
       // Glow for active / hovered / preview-hit
       if (isActive) {
@@ -613,13 +624,26 @@ export class GraphPanel {
       }
 
       // Label — always show when zoomed in, only show for hovered/active/preview otherwise
-      const showLabel = transform.scale > 0.7 || isHov || isActive || isPreviewHit;
+      const showLabel = transform.scale > 0.45 || isHov || isActive || isPreviewHit;
       if (showLabel) {
         const fontSize = Math.max(9, Math.min(13, 11 / transform.scale));
-        ctx.font = (isHov || isActive || isPreviewHit ? '600 ' : '') + fontSize + 'px var(--vscode-editor-font-family, monospace)';
-        ctx.fillStyle = dimmed ? 'rgba(200,200,200,0.3)' : 'rgba(220,220,220,0.95)';
+        const bold = isHov || isActive || isPreviewHit;
+        ctx.font = (bold ? '600 ' : '') + fontSize + 'px var(--vscode-editor-font-family, monospace)';
+        const textColor = dimmed ? 'rgba(200,200,200,0.3)' : 'rgba(230,230,230,0.98)';
+        const labelY = n.y + r + fontSize + 3;
+        const tw = ctx.measureText(n.label).width;
+        if (!dimmed) {
+          // Pill background behind label for readability
+          const pad = 3;
+          ctx.fillStyle = 'rgba(15,15,20,0.72)';
+          ctx.beginPath();
+          const bx = n.x - tw/2 - pad, by = labelY - fontSize, bw = tw + pad*2, bh = fontSize + pad;
+          ctx.roundRect ? ctx.roundRect(bx, by, bw, bh, 3) : ctx.rect(bx, by, bw, bh);
+          ctx.fill();
+        }
+        ctx.fillStyle = textColor;
         ctx.textAlign = 'center';
-        ctx.fillText(n.label, n.x, n.y + r + fontSize + 2);
+        ctx.fillText(n.label, n.x, labelY);
       }
       ctx.globalAlpha = 1;
     });
