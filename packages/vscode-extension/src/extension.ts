@@ -1030,6 +1030,21 @@ export function activate(context: vscode.ExtensionContext): void {
       state.output.show();
     }),
 
+    vscode.commands.registerCommand("codelumeai.resetSetup", async () => {
+      await state.context.globalState.update(SETUP_COMPLETE_KEY, undefined);
+      await state.context.secrets.delete(SECRET_KEY);
+      state.cache.clear();
+      log(state, "info", "Setup state reset. Reload VS Code to re-run first-time setup.");
+      void vscode.window.showInformationMessage(
+        "CodeLumeAI: Setup reset. Reload VS Code window to re-run the guided setup.",
+        "Reload Now",
+      ).then((choice) => {
+        if (choice === "Reload Now") {
+          void vscode.commands.executeCommand("workbench.action.reloadWindow");
+        }
+      });
+    }),
+
     vscode.commands.registerCommand("codelumeai.indexWorkspace", async () => {
       if (!state.workspaceFolderUri) {
         void vscode.window.showErrorMessage("CodeLumeAI: No workspace folder open.");

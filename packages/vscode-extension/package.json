@@ -2,7 +2,7 @@
   "name": "codelumeai",
   "displayName": "CodeLumeAI",
   "description": "Read, navigate, and edit any codebase in plain English. Hover translations, side panel, dependency graph, blast-radius preview, and AI codebase chat.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "publisher": "nic-ai",
   "license": "MIT",
@@ -84,6 +84,11 @@
       {
         "command": "codelumeai.showGraph",
         "title": "Show Dependency Graph",
+        "category": "CodeLumeAI"
+      },
+      {
+        "command": "codelumeai.resetSetup",
+        "title": "Reset Setup (re-run guided tour)",
         "category": "CodeLumeAI"
       }
     ],
