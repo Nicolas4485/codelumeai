@@ -12,7 +12,7 @@ import {
 import { SidePanel } from "./sidePanel";
 import { EditFlow } from "./editFlow";
 import { GraphStore } from "./graph/store";
-import { indexFile } from "./graph/indexer";
+import { indexFile, supplementWithStaticImports } from "./graph/indexer";
 import { GraphPanel } from "./graph/graphPanel";
 import { OnboardingPanel } from "./onboarding/panel";
 import type { ConnectedSymbols } from "./graph/types";
@@ -796,7 +796,20 @@ async function runIndexWorkspace(state: ExtensionState): Promise<number> {
       (state.graphStore as GraphStore).save();
       cancel.dispose();
       const s = (state.graphStore as GraphStore).stats();
-      log(state, "info", `Graph: done. ${s.files} files, ${s.symbols} symbols, ${s.refs} refs.`);
+      log(state, "info", `Graph: LSP pass done. ${s.files} files, ${s.symbols} symbols, ${s.refs} refs.`);
+
+      // Supplement with static import edges — catches LSP warmup misses and
+      // barrel re-exports that the reference provider doesn't surface.
+      const importEdges = await supplementWithStaticImports({
+        store: state.graphStore as GraphStore,
+        workspaceFolder: state.workspaceFolderUri as vscode.Uri,
+        output: state.output,
+      });
+      if (importEdges > 0) {
+        (state.graphStore as GraphStore).save();
+      }
+      const s2 = (state.graphStore as GraphStore).stats();
+      log(state, "info", `Graph: done. ${s2.files} files, ${s2.symbols} symbols, ${s2.refs} refs (+${importEdges} static import edges).`);
       refreshSidePanelIfNeeded(state);
     },
   );

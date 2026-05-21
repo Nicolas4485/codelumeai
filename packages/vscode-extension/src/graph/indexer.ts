@@ -205,3 +205,132 @@ function sha256(text: string): string {
   h.update(text);
   return h.digest("hex").slice(0, 16);
 }
+
+/** Extensions to try when resolving an extensionless import path. */
+const RESOLVE_EXTS = [
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  "/index.ts", "/index.tsx", "/index.js", "/index.jsx",
+];
+
+/**
+ * Supplement the LSP ref graph with statically-parsed import edges.
+ *
+ * Scans every TS/JS file for `import`/`export from`/`require()` statements,
+ * resolves relative paths to workspace-relative file paths, and inserts a
+ * ref edge for each one that is not already in the DB.
+ *
+ * This is a pure additive pass — it never removes existing refs, never
+ * overwrites LSP data. It runs *after* the main LSP indexing loop so the
+ * LSP data takes precedence and this only fills the gaps.
+ *
+ * Key gaps it closes:
+ * - LSP warmup: the TS server hasn't analysed all files during early indexing
+ * - Barrel re-exports: `export * from './utils'` often produces 0 LSP refs
+ * - Entry points: files that only import but export nothing have 0 symbols
+ */
+export async function supplementWithStaticImports(args: {
+  store: GraphStore;
+  workspaceFolder: vscode.Uri;
+  output: vscode.OutputChannel;
+  cancellation?: vscode.CancellationToken;
+}): Promise<number> {
+  const uris = await vscode.workspace.findFiles(
+    new vscode.RelativePattern(
+      args.workspaceFolder,
+      "**/*.{ts,tsx,js,jsx,mjs,cjs}",
+    ),
+    new vscode.RelativePattern(
+      args.workspaceFolder,
+      "{node_modules,dist,build,.git,.turbo}/**",
+    ),
+  );
+
+  // Pre-build a lookup set — avoid per-import DB queries for unknown files
+  const knownFiles = args.store.getAllIndexedFilePaths();
+
+  let edgesAdded = 0;
+
+  for (const uri of uris) {
+    if (args.cancellation?.isCancellationRequested) break;
+
+    const fromRel = workspaceRelative(args.workspaceFolder, uri);
+
+    let text: string;
+    try {
+      const doc = await vscode.workspace.openTextDocument(uri);
+      text = doc.getText();
+    } catch {
+      continue;
+    }
+
+    for (const importPath of extractImportPaths(text)) {
+      if (!importPath.startsWith(".")) continue; // skip node_modules
+
+      const base = resolveRelativeImport(importPath, fromRel);
+      if (!base || base === fromRel) continue;
+
+      // Try the path as-is then with each extension
+      const candidates = [base, ...RESOLVE_EXTS.map((ext) => base + ext)];
+
+      for (const candidate of candidates) {
+        if (!knownFiles.has(candidate)) continue;
+
+        const symbolId = args.store.getFirstSymbolIdForFile(candidate);
+        if (!symbolId) break; // file has no symbols — can't hang a ref from it
+
+        const added = args.store.upsertImportEdge(fromRel, symbolId);
+        if (added) edgesAdded++;
+        break; // matched — stop trying extensions
+      }
+    }
+  }
+
+  args.output.appendLine(
+    `[graph] Static import supplement: +${edgesAdded} import edge(s) added.`,
+  );
+  return edgesAdded;
+}
+
+/** Extract all import/require source strings from TS/JS source text. */
+function extractImportPaths(text: string): string[] {
+  const paths: string[] = [];
+  // import ... from '...'  |  export ... from '...'  (static)
+  const staticRe =
+    /(?:^|[\r\n])\s*(?:import|export)\b[^'"]*?from\s+['"]([^'"]+)['"]/gm;
+  let m: RegExpExecArray | null;
+  while ((m = staticRe.exec(text)) !== null) {
+    if (m[1]) paths.push(m[1]);
+  }
+  // require('...')
+  const requireRe = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while ((m = requireRe.exec(text)) !== null) {
+    if (m[1]) paths.push(m[1]);
+  }
+  return paths;
+}
+
+/**
+ * Resolve a relative import path to a workspace-relative path string
+ * (WITHOUT extension — the caller tries extensions separately).
+ * Returns null if the path escapes the workspace root.
+ */
+function resolveRelativeImport(
+  importPath: string,
+  fromRelFile: string,
+): string | null {
+  const slashIdx = fromRelFile.lastIndexOf("/");
+  const fromDir = slashIdx >= 0 ? fromRelFile.slice(0, slashIdx) : "";
+  const combined = fromDir ? `${fromDir}/${importPath}` : importPath;
+
+  const segments = combined.split("/");
+  const resolved: string[] = [];
+  for (const seg of segments) {
+    if (seg === "..") {
+      if (resolved.length === 0) return null; // would escape workspace root
+      resolved.pop();
+    } else if (seg !== "." && seg !== "") {
+      resolved.push(seg);
+    }
+  }
+  return resolved.length > 0 ? resolved.join("/") : null;
+}

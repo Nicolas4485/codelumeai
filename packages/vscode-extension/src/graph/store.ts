@@ -425,6 +425,59 @@ export class GraphStore {
     return { files, symbols, refs };
   }
 
+  /** All workspace-relative file paths currently in the index. */
+  getAllIndexedFilePaths(): Set<string> {
+    const stmt = this.db.prepare(`SELECT path FROM files`);
+    const result = new Set<string>();
+    while (stmt.step()) {
+      const row = stmt.get();
+      result.add(String(row[0] ?? ""));
+    }
+    stmt.free();
+    return result;
+  }
+
+  /**
+   * First symbol ID for a file, used as the edge target when creating
+   * static import edges (we need a symbol to hang the ref from).
+   * Returns null if the file has no symbols (config files etc).
+   */
+  getFirstSymbolIdForFile(filePath: string): string | null {
+    const stmt = this.db.prepare(
+      `SELECT id FROM symbols WHERE file = ? ORDER BY start_line ASC LIMIT 1`,
+    );
+    stmt.bind([filePath]);
+    const found = stmt.step();
+    if (!found) {
+      stmt.free();
+      return null;
+    }
+    const row = stmt.get();
+    stmt.free();
+    return String(row[0] ?? "");
+  }
+
+  /**
+   * Record a file-level import edge from static import scanning.
+   * No-op if a ref from this file to this symbol already exists.
+   * Returns true if a new edge was inserted.
+   */
+  upsertImportEdge(fromFile: string, toSymbolId: string): boolean {
+    const check = this.db.prepare(
+      `SELECT 1 FROM refs WHERE to_symbol = ? AND from_file = ? LIMIT 1`,
+    );
+    check.bind([toSymbolId, fromFile]);
+    const exists = check.step();
+    check.free();
+    if (exists) return false;
+    const stmt = this.db.prepare(
+      `INSERT OR IGNORE INTO refs (to_symbol, from_file, from_line, from_char) VALUES (?, ?, 0, 0)`,
+    );
+    stmt.run([toSymbolId, fromFile]);
+    stmt.free();
+    return true;
+  }
+
   private scalar(sql: string): number {
     const stmt = this.db.prepare(sql);
     stmt.step();
