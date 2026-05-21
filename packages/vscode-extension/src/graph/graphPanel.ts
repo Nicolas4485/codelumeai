@@ -374,7 +374,11 @@ export class GraphPanel {
     return lerpColor(base, '#e05252', (score - 0.65) / 0.35 * 0.6);
   }
 
-  function nodeRadius(n) { return Math.max(7, Math.min(28, 7 + n.incomingRefs * 1.4)); }
+  function nodeRadius(n) {
+    const connections = (n.incomingRefs || 0) + (n.outgoingDeps || 0);
+    if (connections === 0) return 3.5;
+    return Math.max(5, Math.min(20, 5 + Math.sqrt(connections) * 2.8));
+  }
 
   // ── Cluster halo rendering (Feature 2) ───────────────────────────────────────
   function roundRect(cx, y, w, h, r) {
@@ -412,25 +416,27 @@ export class GraphPanel {
 
       ctx.save();
       // Fill
-      ctx.globalAlpha = 0.11;
+      ctx.globalAlpha = 0.06;
       ctx.fillStyle = color;
       roundRect(minX, minY, bw, bh, rx);
       ctx.fill();
       // Border
-      ctx.globalAlpha = 0.30;
+      ctx.globalAlpha = 0.22;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1 / transform.scale;
+      ctx.setLineDash([6 / transform.scale, 4 / transform.scale]);
       roundRect(minX, minY, bw, bh, rx);
       ctx.stroke();
+      ctx.setLineDash([]);
       ctx.globalAlpha = 1;
-      // Label — only visible when zoomed out enough to see structure
-      if (transform.scale > 0.28) {
-        const fs = Math.max(10, Math.min(18, 14 / transform.scale));
-        ctx.font = '600 ' + fs + 'px var(--vscode-font-family, sans-serif)';
+      // Label — show at wider zoom range, positioned top-left of cluster
+      if (transform.scale > 0.22) {
+        const fs = Math.max(9, Math.min(15, 12 / transform.scale));
+        ctx.font = '500 ' + fs + 'px var(--vscode-font-family, sans-serif)';
         ctx.fillStyle = color;
-        ctx.globalAlpha = 0.65;
-        ctx.textAlign = 'center';
-        ctx.fillText(name, (minX + maxX) / 2, minY - 6 / transform.scale);
+        ctx.globalAlpha = 0.55;
+        ctx.textAlign = 'left';
+        ctx.fillText(name, minX + 8 / transform.scale, minY - 4 / transform.scale);
       }
       ctx.restore();
     });
@@ -453,9 +459,9 @@ export class GraphPanel {
     ns.forEach((n, i) => { idxMap[n.id] = i; });
 
     function tick() {
-      const k = 0.85; // damping
-      const repulse = 3200;
-      const gravity = 0.012;
+      const k = 0.87; // damping
+      const repulse = 1500;
+      const gravity = 0.004;
       const cx = W / 2, cy = H / 2;
 
       // Reset forces
@@ -483,7 +489,7 @@ export class GraphPanel {
         const dist = Math.sqrt(dx * dx + dy * dy) + 0.001;
         const target = 120 + 60 / (e.weight || 1);
         const stretch = dist - target;
-        const strength = 0.04 * Math.min(e.weight, 5);
+        const strength = 0.022 * Math.min(e.weight, 4);
         const fx = strength * stretch * dx / dist;
         const fy = strength * stretch * dy / dist;
         a.ax += fx; a.ay += fy;
@@ -494,6 +500,22 @@ export class GraphPanel {
       ns.forEach(n => {
         n.ax += gravity * (cx - n.x);
         n.ay += gravity * (cy - n.y);
+      });
+
+      // Cluster centroid pull — gently group same-folder nodes together
+      const _centroids = {};
+      ns.forEach(n => {
+        if (!_centroids[n.clusterName]) _centroids[n.clusterName] = { sx: 0, sy: 0, count: 0 };
+        _centroids[n.clusterName].sx += n.x;
+        _centroids[n.clusterName].sy += n.y;
+        _centroids[n.clusterName].count++;
+      });
+      ns.forEach(n => {
+        const c = _centroids[n.clusterName];
+        if (!c || c.count < 2) return;
+        const ccx = c.sx / c.count, ccy = c.sy / c.count;
+        n.ax += 0.003 * (ccx - n.x);
+        n.ay += 0.003 * (ccy - n.y);
       });
 
       // Integrate
@@ -543,8 +565,8 @@ export class GraphPanel {
         dimmed = !highlighted;
         isAmber = highlighted;
       }
-      const alpha = dimmed ? 0.04 : highlighted ? 0.75 : 0.28;
-      const lw = highlighted ? Math.min(e.weight * 0.5 + 1, 3) : 1;
+      const alpha = dimmed ? 0.03 : highlighted ? 0.80 : 0.18;
+      const lw = highlighted ? Math.min(e.weight * 0.4 + 0.8, 2.5) : 0.8;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       const angle = Math.atan2(b.y - a.y, b.x - a.x);
@@ -556,8 +578,8 @@ export class GraphPanel {
       ctx.strokeStyle = highlighted ? (edgeColor + alpha + ')') : ('rgba(150,150,150,' + alpha + ')');
       ctx.lineWidth = lw / transform.scale;
       ctx.stroke();
-      // Arrowhead on highlighted edges
-      if (highlighted) {
+      // Arrowhead on highlighted edges — hover only, not blast-radius
+      if (highlighted && !isAmber) {
         const al = 8 / transform.scale;
         ctx.beginPath();
         ctx.moveTo(ex, ey);
@@ -582,7 +604,7 @@ export class GraphPanel {
       const isHov = n === hov;
       const isPreviewHit = usePreview && previewFiles.has(n.id);
       const isIsolated = n.incomingRefs === 0 && n.outgoingDeps === 0;
-      const baseAlpha = (isIsolated && !useHover && !usePreview) ? 0.55 : 1;
+      const baseAlpha = (isIsolated && !useHover && !usePreview) ? 0.28 : 1;
       ctx.globalAlpha = dimmed ? 0.13 : baseAlpha;
 
       // Glow for active / hovered / preview-hit
@@ -599,7 +621,7 @@ export class GraphPanel {
 
       ctx.beginPath();
       ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = nodeColor(n);
+      ctx.fillStyle = isIsolated ? 'rgba(110,120,145,0.9)' : nodeColor(n);
       ctx.fill();
 
       ctx.shadowColor = 'transparent';
@@ -623,27 +645,23 @@ export class GraphPanel {
         ctx.stroke();
       }
 
-      // Label — always show when zoomed in, only show for hovered/active/preview otherwise
-      const showLabel = transform.scale > 0.45 || isHov || isActive || isPreviewHit;
+      // Label — Obsidian style: right of node, hover/zoom only, text shadow, no pill
+      const showLabel = !isIsolated && (transform.scale > 1.1 || isHov || isActive || isPreviewHit);
       if (showLabel) {
-        const fontSize = Math.max(9, Math.min(13, 11 / transform.scale));
-        const bold = isHov || isActive || isPreviewHit;
-        ctx.font = (bold ? '600 ' : '') + fontSize + 'px var(--vscode-editor-font-family, monospace)';
-        const textColor = dimmed ? 'rgba(200,200,200,0.3)' : 'rgba(230,230,230,0.98)';
-        const labelY = n.y + r + fontSize + 3;
-        const tw = ctx.measureText(n.label).width;
-        if (!dimmed) {
-          // Pill background behind label for readability
-          const pad = 3;
-          ctx.fillStyle = 'rgba(15,15,20,0.72)';
-          ctx.beginPath();
-          const bx = n.x - tw/2 - pad, by = labelY - fontSize, bw = tw + pad*2, bh = fontSize + pad;
-          ctx.roundRect ? ctx.roundRect(bx, by, bw, bh, 3) : ctx.rect(bx, by, bw, bh);
-          ctx.fill();
-        }
+        const fontSize = Math.max(10, Math.min(13, 12 / transform.scale));
+        const bold = isHov || isActive;
+        ctx.font = (bold ? '600 ' : '400 ') + fontSize + 'px var(--vscode-font-family, sans-serif)';
+        const textColor = dimmed ? 'rgba(180,180,180,0.25)' : 'rgba(235,235,240,1)';
+        const labelX = n.x + r + 5 / transform.scale;
+        const labelY = n.y + fontSize * 0.38;
+        ctx.shadowColor = 'rgba(0,0,0,0.85)';
+        ctx.shadowBlur = 5 / transform.scale;
         ctx.fillStyle = textColor;
-        ctx.textAlign = 'center';
-        ctx.fillText(n.label, n.x, labelY);
+        ctx.textAlign = 'left';
+        ctx.fillText(n.label, labelX, labelY);
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.textAlign = 'center'; // reset
       }
       ctx.globalAlpha = 1;
     });
@@ -799,7 +817,7 @@ export class GraphPanel {
         n.vx = 0; n.vy = 0;
       });
       simRunning = true;
-      setTimeout(() => { simRunning = false; fitView(); }, 4000);
+      setTimeout(() => { simRunning = false; fitView(); }, 2500);
       runSim();
     }
   });
@@ -838,10 +856,10 @@ export class GraphPanel {
         if (currentView === 'graph') {
           resizeCanvas();
           sim = initSim(nodes, edges);
-          for (let i = 0; i < 250; i++) sim.tick();
+          for (let i = 0; i < 60; i++) sim.tick();
           fitView();
           simRunning = true;
-          setTimeout(() => { simRunning = false; }, 3500);
+          setTimeout(() => { simRunning = false; fitView(); }, 2200);
           runSim();
         } else {
           renderDocsList();

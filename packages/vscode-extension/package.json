@@ -2,7 +2,7 @@
   "name": "codelumeai",
   "displayName": "CodeLumeAI",
   "description": "Read, navigate, and edit any codebase in plain English. Hover translations, side panel, dependency graph, blast-radius preview, and AI codebase chat.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "publisher": "nic-ai",
   "license": "MIT",
