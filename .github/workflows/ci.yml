@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         # Version is read from package.json's "packageManager" field — do not
         # set "version:" here, the action errors when both are specified.
 
