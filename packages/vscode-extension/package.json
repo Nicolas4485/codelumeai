@@ -163,13 +163,13 @@
     "clean": "rimraf dist .turbo *.vsix"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^25.9.2",
     "@types/sql.js": "^1.4.9",
-    "@types/vscode": "^1.95.0",
-    "@vscode/vsce": "^3.2.0",
-    "esbuild": "^0.24.0",
+    "@types/vscode": "^1.120.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.0",
     "rimraf": "^6.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "@codelumeai/core": "workspace:*",
